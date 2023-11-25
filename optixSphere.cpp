@@ -97,11 +97,11 @@ int main(int argc, char* argv[])
     std::string outfile;
     // Debug mode: smaller image size for faster rendering
 #if defined( NDEBUG )
-    int         width = 160;
-    int         height = 120;
-#else
     int         width = 1600;
     int         height = 1200;
+#else
+    int         width = 160;
+    int         height = 120;
 #endif
 
     // Parse command-line arguments to adjust the output file and image dimensions if needed
@@ -322,7 +322,7 @@ int main(int argc, char* argv[])
             // Specify pipeline compile options that are constant for all the modules in the pipeline.
             pipeline_compile_options.usesMotionBlur = false;
             pipeline_compile_options.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
-            pipeline_compile_options.numPayloadValues = 3;
+            pipeline_compile_options.numPayloadValues = 14;
             pipeline_compile_options.numAttributeValues = 1;
             pipeline_compile_options.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
             pipeline_compile_options.pipelineLaunchParamsVariableName = "params";

@@ -22,6 +22,15 @@ struct Params
     OptixTraversableHandle handle;        // Handle to the top-level acceleration structure for raytracing
 };
 
+struct Payload {
+    float3 result;
+    float3 origin;
+    float3 direction;
+    float3 attenuation;
+    unsigned int hit;
+    int seed;
+};
+
 // The RayGenData structure is populated with data used by the ray generation program.
 struct RayGenData
 {
