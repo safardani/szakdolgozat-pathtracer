@@ -3,8 +3,9 @@ struct SphereData
 {
     float3 center;
     float radius;
-
     float3 color;
+    float3 specular;   // Specular reflectance of the material.
+    float  roughness;  // Roughness value of the material.
 };
 
 // The Params structure holds the scene parameters that are read by the ray generation program.
@@ -23,12 +24,13 @@ struct Params
 };
 
 struct Payload {
-    float3 result;
-    float3 origin;
-    float3 direction;
-    float3 attenuation;
-    unsigned int hit;
-    int seed;
+    float3 attenuation;     // Attenuation of the ray
+    int seed;               // Seed for the random number generator
+
+    float3 result;          // Returned RGB color of the ray
+    float3 origin;          // Origin position of the ray
+    float3 direction;       // Direction of the ray
+    unsigned int hit;       // Whether the ray hit something
 };
 
 // The RayGenData structure is populated with data used by the ray generation program.
@@ -51,5 +53,7 @@ struct MissData
 // The HitGroupData structure would contain data about the materials or geometric properties if needed.
 struct HitGroupData
 {
-    float3 color; // Color of the sphere material.
+    float3 color;      // Color of the sphere material.
+    float3 specular;   // Specular reflectance of the material.
+    float  roughness;  // Roughness value of the material.
 };

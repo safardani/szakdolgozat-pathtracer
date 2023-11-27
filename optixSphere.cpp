@@ -57,7 +57,7 @@ void configureCamera(sutil::Camera& cam, const uint32_t width, const uint32_t he
 {
     cam.setEye({ 0.0f, 3.0f, -10.0f });
     cam.setLookat({ 0.0f, 0.0f, 0.0f });
-    cam.setUp({ 0.0f, 1.0f, 3.0f });
+    cam.setUp(normalize(make_float3(0.0f, 10.0f, 3.0f )));
     cam.setFovY(90.0f);
     cam.setAspectRatio((float)width / (float)height);
 }
@@ -167,13 +167,25 @@ int main(int argc, char* argv[])
                 bool overlap = false;
 				SphereData sphere;
                 if (i == 0) {
+                    // Create a large sphere to act as the ground plane
 					sphere.center = make_float3(0.0f, -1000.5f, 0.0f);
                     sphere.radius = 1000.f;
                     sphere.color = make_float3(0.7f, 0.7f, 0.7f);
+                    sphere.specular = sphere.color;
+                    sphere.roughness = 0.8f;
 				} else {
+                    // Create random spheres
                     sphere.center = make_float3(15.0f * (rnd_f() - .5f), 0.0f, 15.0f * (rnd_f() - .5f));
 				    sphere.radius = 0.5f;
                     sphere.color = make_float3(rnd_f(), rnd_f(), rnd_f());
+                    sphere.specular = sphere.color;
+                    int rgh = rnd_f();
+                    if (rgh < 0.4f)
+						sphere.roughness = rnd_f() * 0.2f + 0.1f;
+					else if (rgh < 0.8f)
+						sphere.roughness = rnd_f() * 0.1f + 0.9f;
+                    else
+						sphere.roughness = rnd_f();
 
                     // Check for overlapping spheres
                     for (int j = 0; j < spheres.size(); ++j) {
@@ -290,6 +302,7 @@ int main(int argc, char* argv[])
             size_t compacted_gas_size;
             CUDA_CHECK(cudaMemcpy(&compacted_gas_size, (void*)emitProperty.result, sizeof(size_t), cudaMemcpyDeviceToHost));
 
+            // If the GAS is not yet compacted, do so now
             if (compacted_gas_size < gas_buffer_sizes.outputSizeInBytes) {
                 CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_gas_output_buffer), compacted_gas_size));
                 OPTIX_CHECK(optixAccelCompact(context, 0, gas_handle, d_gas_output_buffer, compacted_gas_size, &gas_handle));
@@ -519,6 +532,8 @@ int main(int argc, char* argv[])
 
                 // Fill each of your SBT records with the appropriate color
                 hg_sbts[i].data.color = spheres[i].color;  // Assuming 'spheres' is the vector of SphereData you allocated earlier.
+                hg_sbts[i].data.specular = spheres[i].specular;
+                hg_sbts[i].data.roughness = spheres[i].roughness;
             }
 
             // Copy the hit group SBT records to the device
