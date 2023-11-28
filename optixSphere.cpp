@@ -335,7 +335,7 @@ int main(int argc, char* argv[])
             // Specify pipeline compile options that are constant for all the modules in the pipeline.
             pipeline_compile_options.usesMotionBlur = false;
             pipeline_compile_options.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
-            pipeline_compile_options.numPayloadValues = 14;
+            pipeline_compile_options.numPayloadValues = 18;
             pipeline_compile_options.numAttributeValues = 1;
             pipeline_compile_options.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
             pipeline_compile_options.pipelineLaunchParamsVariableName = "params";
@@ -388,7 +388,7 @@ int main(int argc, char* argv[])
             OptixProgramGroupDesc miss_prog_group_desc = {};
             miss_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_MISS;
             miss_prog_group_desc.miss.module = module;
-            miss_prog_group_desc.miss.entryFunctionName = "__miss__ms";
+            miss_prog_group_desc.miss.entryFunctionName = "__miss__radiance";
             OPTIX_CHECK_LOG(optixProgramGroupCreate(
                 context,
                 &miss_prog_group_desc,
@@ -403,7 +403,7 @@ int main(int argc, char* argv[])
             OptixProgramGroupDesc hitgroup_prog_group_desc = {};
             hitgroup_prog_group_desc.kind = OPTIX_PROGRAM_GROUP_KIND_HITGROUP;
             hitgroup_prog_group_desc.hitgroup.moduleCH = module;
-            hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = "__closesthit__ch";
+            hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
             hitgroup_prog_group_desc.hitgroup.moduleAH = nullptr;
             hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = nullptr;
             hitgroup_prog_group_desc.hitgroup.moduleIS = sphere_module; // Use the built-in sphere module for intersection
@@ -507,7 +507,7 @@ int main(int argc, char* argv[])
             size_t      miss_record_size = sizeof(MissSbtRecord);
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&miss_record), miss_record_size));
             MissSbtRecord ms_sbt;
-            ms_sbt.data = { 0.4f, 0.45f, 0.6f };
+            ms_sbt.data = { 0.812f, 0.925f, 0.969f };
             OPTIX_CHECK(optixSbtRecordPackHeader(miss_prog_group, &ms_sbt));
             CUDA_CHECK(cudaMemcpy(
                 reinterpret_cast<void*>(miss_record),
@@ -531,7 +531,8 @@ int main(int argc, char* argv[])
                 OPTIX_CHECK(optixSbtRecordPackHeader(hitgroup_prog_group, &hg_sbts[i]));
 
                 // Fill each of your SBT records with the appropriate color
-                hg_sbts[i].data.color = spheres[i].color;  // Assuming 'spheres' is the vector of SphereData you allocated earlier.
+                hg_sbts[i].data.diffuse_color = spheres[i].color;  // Assuming 'spheres' is the vector of SphereData you allocated earlier.
+                hg_sbts[i].data.emission_color = make_float3(0.0f, 0.0f, 0.0f);
                 hg_sbts[i].data.specular = spheres[i].specular;
                 hg_sbts[i].data.roughness = spheres[i].roughness;
             }

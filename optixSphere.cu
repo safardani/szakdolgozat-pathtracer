@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #define RANDFLOAT3 make_float3(rnd(seed), rnd(seed), rnd(seed))
+constexpr OptixPayloadTypeID PAYLOAD_TYPE_RADIANCE = OPTIX_PAYLOAD_TYPE_ID_0;
 
 // Declare a constant Params structure that will be filled in by the host (CPU) before launch,
 // and can be accessed by all the device (GPU) kernels.
@@ -17,10 +18,44 @@ extern "C" {
     __constant__ Params params;
 }
 
+// Helper class for constructing an orthonormal basis given a normal vector.
+struct Onb
+{
+    __forceinline__ __device__ Onb(const float3& normal)
+    {
+        m_normal = normal;
+
+        if (fabs(m_normal.x) > fabs(m_normal.z))
+        {
+            m_binormal.x = -m_normal.y;
+            m_binormal.y = m_normal.x;
+            m_binormal.z = 0;
+        }
+        else
+        {
+            m_binormal.x = 0;
+            m_binormal.y = -m_normal.z;
+            m_binormal.z = m_normal.y;
+        }
+
+        m_binormal = normalize(m_binormal);
+        m_tangent = cross(m_binormal, m_normal);
+    }
+
+    __forceinline__ __device__ void inverse_transform(float3& p) const
+    {
+        p = p.x * m_tangent + p.y * m_binormal + p.z * m_normal;
+    }
+
+    float3 m_tangent;
+    float3 m_binormal;
+    float3 m_normal;
+};
+
 
 // This utility function performs the actual ray tracing from the given origin in the given direction.
 // If the ray intersects an object, the payload (prd) contains the shading information which is set in closest-hit or miss program.
-static __forceinline__ __device__ void trace(
+static __forceinline__ __device__ void traceRadiance(
     OptixTraversableHandle handle,          // The traversable handle representing the scene to trace against
     float3                 ray_origin,      // The origin of the ray
     float3                 ray_direction,   // The direction of the ray
@@ -30,120 +65,151 @@ static __forceinline__ __device__ void trace(
 )
 {
     // Convert the payload data to 32-bit float values that can be used in the optixTrace call
-    unsigned int p0, p1, p2, o1, o2, o3, d1, d2, d3, a1, a2, a3, h, seed;
+    unsigned int u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17;
 
-    p0 = __float_as_uint(prd->result.x);
-    p1 = __float_as_uint(prd->result.y);
-    p2 = __float_as_uint(prd->result.z);
-
-    o1 = __float_as_uint(prd->origin.x);
-    o2 = __float_as_uint(prd->origin.y);
-    o3 = __float_as_uint(prd->origin.z);
-
-    d1 = __float_as_uint(prd->direction.x);
-    d2 = __float_as_uint(prd->direction.y);
-    d3 = __float_as_uint(prd->direction.z);
-
-    a1 = __float_as_uint(prd->attenuation.x);
-    a2 = __float_as_uint(prd->attenuation.y);
-    a3 = __float_as_uint(prd->attenuation.z);
-
-    h = prd->hit;
-
-    seed = prd->seed;
+    u0 = __float_as_uint(prd->attenuation.x);
+    u1 = __float_as_uint(prd->attenuation.y);
+    u2 = __float_as_uint(prd->attenuation.z);
+    u3 = prd->seed;
+    u17 = prd->depth;
 
     // Perform the trace call which will call into the intersect, any-hit and closest-hit programs
-    optixTrace(
+    optixTraverse(
+        PAYLOAD_TYPE_RADIANCE,
         handle,
         ray_origin,
         ray_direction,
         tmin,
         tmax,
-        0.0f,                   // rayTime: a value to simulate motion blur (not used here)
-        OptixVisibilityMask(1), // Visibility mask to define which objects this ray should intersect
-        OPTIX_RAY_FLAG_NONE,    // A set of flags that can be used to control ray behavior
-        0,                      // SBT offset: Index into the Shader Binding Table
-        1,                      // SBT stride: The step between records in the SBT used for consecutive rays
-        0,                      // missSBTIndex: Index of the miss shader in the SBT
-        p0, p1, p2,
-        o1, o2, o3,
-        d1, d2, d3,
-        a1, a2, a3,
-        h, seed           // payload
+        0.0f,                     // rayTime
+        OptixVisibilityMask(1),
+        OPTIX_RAY_FLAG_NONE,
+        0,                        // SBT offset
+        1,           // SBT stride
+        0,                        // missSBTIndex
+        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+    optixReorder(
+        // Application specific coherence hints could be passed in here
     );
 
-    // Convert the 32-bit float values back to the payload data
-    prd->result.x = __uint_as_float(p0);
-    prd->result.y = __uint_as_float(p1);
-    prd->result.z = __uint_as_float(p2);
+    optixInvoke(PAYLOAD_TYPE_RADIANCE,
+        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
 
-    prd->origin.x = __uint_as_float(o1);
-    prd->origin.y = __uint_as_float(o2);
-    prd->origin.z = __uint_as_float(o3);
+    prd->attenuation = make_float3(__uint_as_float(u0), __uint_as_float(u1), __uint_as_float(u2));
+    prd->seed = u3;
+    
+    prd->emitted = make_float3(__uint_as_float(u4), __uint_as_float(u5), __uint_as_float(u6));
+    prd->radiance = make_float3(__uint_as_float(u7), __uint_as_float(u8), __uint_as_float(u9));
+    prd->origin = make_float3(__uint_as_float(u10), __uint_as_float(u11), __uint_as_float(u12));
+    prd->direction = make_float3(__uint_as_float(u13), __uint_as_float(u14), __uint_as_float(u15));
+    prd->done = u16;
+    prd->depth = u17;
+}
 
-    prd->direction.x = __uint_as_float(d1);
-    prd->direction.y = __uint_as_float(d2);
-    prd->direction.z = __uint_as_float(d3);
 
-    prd->attenuation.x = __uint_as_float(a1);
-    prd->attenuation.y = __uint_as_float(a2);
-    prd->attenuation.z = __uint_as_float(a3);
+// Returns true if ray is occluded, else false
+static __forceinline__ __device__ bool traceOcclusion(
+    OptixTraversableHandle handle,
+    float3                 ray_origin,
+    float3                 ray_direction,
+    float                  tmin,
+    float                  tmax
+)
+{
+    // We are only casting probe rays so no shader invocation is needed
+    optixTraverse(
+        handle,
+        ray_origin,
+        ray_direction,
+        tmin,
+        tmax, 0.0f,                // rayTime
+        OptixVisibilityMask(1),
+        OPTIX_RAY_FLAG_TERMINATE_ON_FIRST_HIT | OPTIX_RAY_FLAG_DISABLE_ANYHIT,
+        0,                         // SBT offset
+        1,                         // SBT stride
+        0                          // missSBTIndex
+    );
+    return optixHitObjectIsHit();
+}
 
-    prd->hit = h;
 
-    prd->seed = seed;
+// A helper function to retrieve the payload for the current ray
+static __forceinline__ __device__ Payload getPayloadCH()
+{
+    Payload p = {};
+
+    p.attenuation.x = __uint_as_float(optixGetPayload_0());
+    p.attenuation.y = __uint_as_float(optixGetPayload_1());
+    p.attenuation.z = __uint_as_float(optixGetPayload_2());
+    p.seed = optixGetPayload_3();
+    p.depth = optixGetPayload_17();
+
+    return p;
+}
+
+// A helper function to retrieve the payload for the current ray
+static __forceinline__ __device__ Payload getPayloadMiss()
+{
+    Payload p = {};
+    return p;
 }
 
 
 // A helper function to set the payload for the current ray
-static __forceinline__ __device__ void setPayload(Payload p)
+static __forceinline__ __device__ void setPayloadCH(Payload p)
 {
-    optixSetPayload_0(__float_as_uint(p.result.x));
-    optixSetPayload_1(__float_as_uint(p.result.y));
-    optixSetPayload_2(__float_as_uint(p.result.z));
-
-    optixSetPayload_3(__float_as_uint(p.origin.x));
-    optixSetPayload_4(__float_as_uint(p.origin.y));
-    optixSetPayload_5(__float_as_uint(p.origin.z));
-
-    optixSetPayload_6(__float_as_uint(p.direction.x));
-    optixSetPayload_7(__float_as_uint(p.direction.y));
-    optixSetPayload_8(__float_as_uint(p.direction.z));
-
-    optixSetPayload_9(__float_as_uint(p.attenuation.x));
-    optixSetPayload_10(__float_as_uint(p.attenuation.y));
-    optixSetPayload_11(__float_as_uint(p.attenuation.z));
-
-    optixSetPayload_12(p.hit);
-
-    optixSetPayload_13(p.seed); 
+    optixSetPayload_0(__float_as_uint(p.attenuation.x));
+    optixSetPayload_1(__float_as_uint(p.attenuation.y));
+    optixSetPayload_2(__float_as_uint(p.attenuation.z));
+    
+    optixSetPayload_3(p.seed);
+    
+    optixSetPayload_4(__float_as_uint(p.emitted.x));
+    optixSetPayload_5(__float_as_uint(p.emitted.y));
+    optixSetPayload_6(__float_as_uint(p.emitted.z));
+    
+    optixSetPayload_7(__float_as_uint(p.radiance.x));
+    optixSetPayload_8(__float_as_uint(p.radiance.y));
+    optixSetPayload_9(__float_as_uint(p.radiance.z));
+    
+    optixSetPayload_10(__float_as_uint(p.origin.x));
+    optixSetPayload_11(__float_as_uint(p.origin.y));
+    optixSetPayload_12(__float_as_uint(p.origin.z));
+    
+    optixSetPayload_13(__float_as_uint(p.direction.x));
+    optixSetPayload_14(__float_as_uint(p.direction.y));
+    optixSetPayload_15(__float_as_uint(p.direction.z));
+    
+    optixSetPayload_16(p.done);
+    optixSetPayload_17(p.depth);
 }
 
-// A helper function to retrieve the payload for the current ray
-static __forceinline__ __device__ Payload getPayload()
+
+// A helper function to set the payload for the current ray
+static __forceinline__ __device__ void setPayloadMiss(Payload p)
 {
-    return Payload{
-        make_float3(
-            __uint_as_float(optixGetPayload_0()),
-            __uint_as_float(optixGetPayload_1()),
-            __uint_as_float(optixGetPayload_2())),
-make_float3(
-            __uint_as_float(optixGetPayload_3()),
-            __uint_as_float(optixGetPayload_4()),
-            __uint_as_float(optixGetPayload_5())),
-        make_float3(
-            __uint_as_float(optixGetPayload_6()),
-            __uint_as_float(optixGetPayload_7()),
-            __uint_as_float(optixGetPayload_8())),
+    optixSetPayload_4(__float_as_uint(p.emitted.x));
+    optixSetPayload_5(__float_as_uint(p.emitted.y));
+    optixSetPayload_6(__float_as_uint(p.emitted.z));
+    
+    optixSetPayload_7(__float_as_uint(p.radiance.x));
+    optixSetPayload_8(__float_as_uint(p.radiance.y));
+    optixSetPayload_9(__float_as_uint(p.radiance.z));
+    
+    optixSetPayload_16(p.done);
+}
 
-        make_float3(
-            __uint_as_float(optixGetPayload_9()),
-            __uint_as_float(optixGetPayload_10()),
-            __uint_as_float(optixGetPayload_11())),
+// A helper function to generate a random 3D vector that is distributed as a cosine-weighted hemisphere around the z-axis
+static __forceinline__ __device__ void cosine_sample_hemisphere(const float u1, const float u2, float3& p)
+{
+    // Uniformly sample disk.
+    const float r = sqrtf(u1);
+    const float phi = 2.0f * M_PIf * u2;
+    p.x = r * cosf(phi);
+    p.y = r * sinf(phi);
 
-        optixGetPayload_12(),
-        (int)optixGetPayload_13()
-    };
+    // Project up to hemisphere.
+    p.z = sqrtf(fmaxf(0.0f, 1.0f - p.x * p.x - p.y * p.y));
 }
 
 // A helper function to generate a random 3D vector that is inside the unit sphere (i.e. length < 1.0f)
@@ -172,77 +238,77 @@ static __forceinline__ __device__ float3 tonemap(float3 x)
 // The ray generation program. This is called once per pixel, and its job is to generate the primary rays.
 extern "C" __global__ void __raygen__rg()
 {
-    // Compute the launch index, which corresponds to the pixel indices in the image
-    const uint3 idx = optixGetLaunchIndex();
-    const uint3 dim = optixGetLaunchDimensions();
-
     // Get a pointer to the ray generation data stored in the Shader Binding Table
     const RayGenData* rtData = (RayGenData*)optixGetSbtDataPointer();
-
+    
     // Get the camera basis vectors and eye position from the ray generation data.
+    const float3      eye = rtData->cam_eye;
     const float3      U = rtData->camera_u;
     const float3      V = rtData->camera_v;
     const float3      W = rtData->camera_w;
 
-    // Initialize the payload data for this ray. This will be modified by the closest-hit or miss program
-    Payload payload = Payload{
-        make_float3(1.0f, 1.0f, 1.0f),
-        make_float3(0.0f, 0.0f, 0.0f),
-        make_float3(1.0f, 0.0f, 0.0f),
-        make_float3(1.0f, 1.0f, 1.0f), 1, 1
-    };
+    // Compute the launch index, which corresponds to the pixel indices in the image
+    const uint3 idx = optixGetLaunchIndex();
+    const uint3 dim = optixGetLaunchDimensions();
 
-    // Set an initial color payload for the ray which might be modified by the closest-hit or miss program
-    float3       payload_rgb = make_float3(0.5f, 0.5f, 0.5f);
     unsigned int seed = tea<4>(idx.y, idx.x);
 
+    // Set an initial color payload for the ray which might be modified by the closest-hit or miss program
+    float3       payload_rgb = make_float3(0.0f);
+
     // Sample the pixel multiple times and average the results
-    int sample_batch_count = 2000;
+    int sample_batch_count = 600;
     for (size_t i = 0; i < sample_batch_count; i++)
     {
-        // Generate a unique seed for the current sample batch
-        seed = tea<4>(idx.y * 1600 + idx.x, i);
-        payload.seed = seed;
-
         // Generate a random subpixel offset for anti-aliasing
         float2 subpixel_jitter = make_float2(rnd(seed), rnd(seed));
 
         // Normalized device coordinates (NDC) are in the range [-1, 1] for both x and y
         float2 d = 2.0f * make_float2((idx.x + subpixel_jitter.x) / (dim.x), (idx.y + subpixel_jitter.y) / (dim.y)) - 1.0f;
-
+        
         // Calculate the ray origin and direction for the current pixel
         float3 origin = rtData->cam_eye;
         float3 direction = normalize(d.x * U + d.y * V + W);
-        
-        // Reset the payload data for this ray (every iteration of the loop)
-        payload.attenuation = make_float3(1.0f, 1.0f, 1.0f);
-        payload.direction = direction;
 
-        // Trace the ray into the scene
+        // Reset the payload data for this ray (every iteration of the loop)
+        Payload payload;
+        payload.attenuation = make_float3(1.0f);
+        payload.seed = seed;
+        payload.depth = 0.f;
+
         int max_depth = 20;
-        for (int q = 0; q < max_depth; q++)
+        // Trace the ray into the scene
+        for (;;)
         {
-            trace(
+            traceRadiance(
                 params.handle,
                 origin,
                 direction,
-                0.0005f,  // tmin
+                0.01f,  // tmin
                 1e16f,  // tmax
                 &payload);
 
-            // If the ray did not hit anything, terminate the loop after accumulating the background color
-            if (payload.hit == 0) {
-                payload_rgb += make_float3(payload.result.x, payload.result.y, payload.result.z);
-                break;
-            }
+            // Accumulate the ray's contribution to the pixel color
+            payload_rgb += payload.emitted;
+            payload_rgb += payload.radiance * payload.attenuation;
 
-            // If the ray hit something, accumulate the material color and generate a new ray in the reflected direction
+            // Russian roulette: try to keep path weights equal to one by randomly terminating paths.
+            const float p = dot(payload.attenuation, make_float3(0.30f, 0.59f, 0.11f));
+            const bool done = payload.done || rnd(seed) > p;
+            if (done)
+                break;
+            payload.attenuation /= p;
+
+            // Update ray origin and direction for the next path segment
             origin = payload.origin;
             direction = payload.direction;
+
+            ++payload.depth;
         }
     }
 
-    float exposure = 1.0f;
+    // Exposure compensation value
+    float exposure = 0.0f;
 
     // Apply exposure before tonemapping
     payload_rgb = payload_rgb / sample_batch_count * exp2(exposure); // Incorporate exposure
@@ -264,122 +330,148 @@ extern "C" __global__ void __raygen__rg()
     params.image[idx.y * params.image_width + idx.x] = make_color(payload_rgb);
 }
 
-// Modified sigmoid function to create the skybox's gradient
-static __forceinline__ __device__ float modified_sigmoid(float angle) {
-    float exponent = (0.99f - angle) * 1100.f;
-    float sigmoid = (19.8f / (1.f + expf(exponent))) + 0.2f;
-    
-    return sigmoid;
-}
-
 // Fresnel-Schlick implementation for specular reflection
 static __forceinline__ __device__ float3 fresnelSchlick(float cosTheta, const float3& F0)
 {
     return F0 + (make_float3(1.0f) - F0) * powf(1.0f - cosTheta, 5.0f);
 }
 
+// Helper function to create an orthonormal basis given a normal vector
+static __forceinline__ __device__ void createOrthogonalSystem(const float3& w, float3& u, float3& v) {
+    if (fabs(w.x) > fabs(w.y))
+        u = normalize(cross(make_float3(0.0f, 1.0f, 0.0f), w));
+    else
+        u = normalize(cross(make_float3(1.0f, 0.0f, 0.0f), w));
+    v = cross(w, u);
+}
+
 // The miss program. This is called for any ray that does not hit geometry.
-extern "C" __global__ void __miss__ms()
+extern "C" __global__ void __miss__radiance()
 {
-    // Get a pointer to the miss program data stored in the Shader Binding Table.
+    optixSetPayloadTypes(PAYLOAD_TYPE_RADIANCE);
+
+    // Retrieve the current MissData from the SBT
     MissData* rt_data = reinterpret_cast<MissData*>(optixGetSbtDataPointer());
-    // Read the existing payload. This payload was set by the raygen program.
-    Payload payload = getPayload();
+    Payload prd = getPayloadMiss();
 
-    // Calculate the skybox color based on the ray direction
-    float3 unit_direction = normalize(payload.direction);
-    float angle_mult = dot(unit_direction, normalize(make_float3(0.9f, 1.0f, 3.0f))); 
-    float3 c = modified_sigmoid(angle_mult) * make_float3(0.29f, 0.58f, 0.94f); 
+    // Set the ray's payload to the miss color (in this case black)
+    prd.radiance = make_float3(rt_data->r, rt_data->g, rt_data->b);
+    prd.emitted = make_float3(0.f);
+    prd.done = true;
 
-    // Set the payload to the resulting skybox color after applying the attenuation
-    float3 sampled_color = payload.attenuation * c; 
-
-    setPayload(Payload{
-        sampled_color,
-        payload.origin, payload.direction, make_float3(0.0f), 0, payload.seed
-    });
+    setPayloadMiss(prd);
 }
 
 // The closest hit program. This is called when a ray hits the closest geometry.
-extern "C" __global__ void __closesthit__ch()
+extern "C" __global__ void __closesthit__radiance()
 {
-    // Optix gives us information about the intersected object and hit distance
-    float  t_hit = optixGetRayTmax();
+    optixSetPayloadTypes(PAYLOAD_TYPE_RADIANCE);
 
-    // The ray's origin and direction
-    const float3 ray_orig = optixGetWorldRayOrigin();
-    const float3 ray_dir = optixGetWorldRayDirection();
+    // Retrieve the current HitGroupData from the SBT
+    HitGroupData* hit_group_data = reinterpret_cast<HitGroupData*>(optixGetSbtDataPointer());
+
+    // Retrieve the primitive index and barycentrics for the current hit
+    const unsigned int  prim_idx = optixGetPrimitiveIndex();
+    const float3        ray_dir = optixGetWorldRayDirection();
+    const float3        ray_orig = optixGetWorldRayOrigin();
+    float               t_hit = optixGetRayTmax();
+    const int           vert_idx_offset = prim_idx * 3;
 
     // Other information such as primitive index, traversable handle and SBT GAS index
-    const unsigned int           prim_idx = optixGetPrimitiveIndex();
     const OptixTraversableHandle gas = optixGetGASTraversableHandle();
     const unsigned int           sbtGASIndex = optixGetSbtGASIndex();
 
     // Define and retrieve the sphere's data (center and radius)
     float4 q;
     optixGetSphereData(gas, prim_idx, sbtGASIndex, 0.f, &q);
-    
-    // Read the existing payload. This payload was set by the raygen program.
-    Payload p = getPayload();
-
-    // Retrieve the current HitGroupData from the SBT
-    HitGroupData* hit_group_data = reinterpret_cast<HitGroupData*>(optixGetSbtDataPointer());
 
     // Compute the intersection point in world space
-    float3 world_raypos = ray_orig + t_hit * ray_dir;
+    float3 intersect_point = ray_orig + t_hit * ray_dir;
     // Transform the intersection point from world space to object space
-    float3 obj_raypos = optixTransformPointFromWorldToObjectSpace(world_raypos);
+    float3 localcoords_intersect_location = optixTransformPointFromWorldToObjectSpace(intersect_point);
     // Determine the object space normal, and then transform it back to world space
-    float3 obj_normal = (obj_raypos - make_float3(q)) / q.w;
+    float3 localcoords_obj_normal = (localcoords_intersect_location - make_float3(q)) / q.w;
     // Normalize the normal vector after transforming it to world space
-    float3 world_normal = normalize(optixTransformNormalFromObjectToWorldSpace(obj_normal));
+    float3 normal_intersect = normalize(optixTransformNormalFromObjectToWorldSpace(localcoords_obj_normal));
 
-    // Use the provided color and other properties from the hit group data
-    const float3 diffuse_albedo = hit_group_data->color;
-    const float3 specular_albedo = hit_group_data->specular;
-    const float roughness = hit_group_data->roughness;
+    // Read the existing payload. This payload was set by the raygen program.
+    Payload p = getPayloadCH();
 
-    // Calculate reflection direction
-    float3 reflection_direction = reflect(-ray_dir, world_normal);
-    reflection_direction = normalize(reflection_direction + roughness * normalize(random_in_unit_sphere(p.seed)));
-
-    // Calculate the specular component
-    float3 half_vector = normalize(- ray_dir + normalize(reflect(-ray_dir, world_normal))); // half_vector = "halfway vector"
-    float NoH = dot(world_normal, half_vector); // NoH = "normal dot half_vector"
-
-    // Compute the Fresnel-Schlick term
-    float3 F0 = make_float3(0.04f); // Assume non-metallic
-    float3 F = fresnelSchlick(fmaxf(dot(world_normal, -ray_dir), 0.0f), F0);
-
-    // Combine the specular and diffuse components
-    float3 specular_component = F * specular_albedo;
-    float3 diffuse_component = (1.0f - F) * diffuse_albedo;
-
-    // Combine the specular and diffuse components by adding them together
-    float3 material_response = diffuse_component + specular_component;
-    
-    float3 target;
-    float3 new_dir;
+    // If this is the first bounce, set the emitted color to the object's emission color
+    if (p.depth == 0)
+        p.emitted = hit_group_data->emission_color;
+    else
+        p.emitted = make_float3(0.0f);
 
     unsigned int seed = p.seed;
-    float random = rnd(seed);
-    if (random > sqrt(dot(F, F))) {
-        // Diffuse component
-        target = world_raypos + world_normal + random_in_unit_sphere(p.seed);
-        new_dir = normalize(target - world_raypos);
-	} else {
-		// Specular component
-        target = world_raypos + reflection_direction;
-		new_dir = normalize(target - world_raypos);
+    {
+        /*// For cosine-weighted hemisphere sampling, TODO reimplement later
+        const float z1 = rnd(seed);
+        const float z2 = rnd(seed);
+    
+        // Generate a random direction for diffuse reflection
+        float3 w_in;
+        cosine_sample_hemisphere(z1, z2, w_in);
+        Onb onb(normal_intersect);
+        onb.inverse_transform(w_in);
+
+        p.direction = w_in;
+        */
+        
+        // Set the payload data for the next iteration of the ray
+        p.direction = normalize(normal_intersect + random_in_unit_sphere(seed));
+        p.origin = intersect_point;
+        
+        // Calculate the diffuse component of the material
+        p.attenuation *= hit_group_data->diffuse_color;
     }
 
-    //float3 cur_attenuation = p.attenuation * (rt_data->color);
-    float3 cur_attenuation = material_response * p.attenuation;
+    p.seed = seed;
 
-    // Set the payload to the resulting normal shaded color
-    setPayload(Payload{
-        make_float3(0.0f, 0.0f, 0.0f),
-        make_float3(world_raypos.x, world_raypos.y, world_raypos.z),
-        make_float3(new_dir.x, new_dir.y, new_dir.z), cur_attenuation, 1, p.seed
-    });
+    // Define the sunlight properties
+    float3 sunlight_direction = normalize(make_float3(0.9f, 1.0f, 3.0f));
+    float3 sunlight_emission = make_float3(15.0f);
+    float sunlight_spread = 0.1f;
+
+    // Sample the sun's direction
+    const float r = sqrt(rnd(seed));  // Uniformly distributed radius
+    const float theta = 2.0f * M_PI * rnd(seed);  // Uniformly distributed angle
+    
+    // Unit disk x, y coordinates
+    const float x = sqrt(r) * cosf(theta);
+    const float y = sqrt(r) * sinf(theta);
+    
+    // Construct an orthonormal basis with w as sunlight_direction
+    float3 w = sunlight_direction;
+    float3 u, v;
+    createOrthogonalSystem(w, u, v);
+
+    // Sample the sun's direction
+    sunlight_direction = normalize(sunlight_direction + sunlight_spread * (x * u + y * v));
+
+    // Calculate properties of light sample (for area based pdf)
+    const float  nDl = dot(normal_intersect, sunlight_direction);
+
+    // Calculate the weight of the sunlight sample
+    float weight = 0.0f;
+    if (nDl > 0.0f)
+    {
+        const bool occluded =
+            traceOcclusion(
+                params.handle,
+                intersect_point,
+                sunlight_direction,
+                0.01f,           // tmin
+                1e16f);  // tmax
+
+        // If the light is not occluded, calculate the weight
+        if (!occluded)
+            weight = nDl;
+    }
+
+    // Calculate the radiance of the sunlight sample
+    p.radiance = sunlight_emission * weight;
+    p.done = false;
+
+    setPayloadCH(p);
 }

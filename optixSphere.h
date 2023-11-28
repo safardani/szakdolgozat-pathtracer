@@ -27,10 +27,12 @@ struct Payload {
     float3 attenuation;     // Attenuation of the ray
     int seed;               // Seed for the random number generator
 
-    float3 result;          // Returned RGB color of the ray
+    float3 emitted; 	    // Emitted radiance
+    float3 radiance; 	    // The amount of light that passes through a particular area and falls within a given solid angle in a specified direction
     float3 origin;          // Origin position of the ray
     float3 direction;       // Direction of the ray
-    unsigned int hit;       // Whether the ray hit something
+    int done;
+    int depth;              // Depth of the ray
 };
 
 // The RayGenData structure is populated with data used by the ray generation program.
@@ -53,7 +55,8 @@ struct MissData
 // The HitGroupData structure would contain data about the materials or geometric properties if needed.
 struct HitGroupData
 {
-    float3 color;      // Color of the sphere material.
+    float3 emission_color;
+    float3 diffuse_color;
     float3 specular;   // Specular reflectance of the material.
     float  roughness;  // Roughness value of the material.
 };
