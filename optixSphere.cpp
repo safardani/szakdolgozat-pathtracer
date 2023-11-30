@@ -170,22 +170,50 @@ int main(int argc, char* argv[])
                     // Create a large sphere to act as the ground plane
 					sphere.center = make_float3(0.0f, -1000.5f, 0.0f);
                     sphere.radius = 1000.f;
-                    sphere.color = make_float3(0.7f, 0.7f, 0.7f);
+                    sphere.color = make_float3(0.2f);
                     sphere.specular = sphere.color;
                     sphere.roughness = 0.8f;
+                    sphere.metallic = false;
+                    sphere.transparent = false;
 				} else {
+                    float type_gen = rnd_f();
+
+                    if (type_gen < 0.2f) {
+						// Create a transparent sphere
+						sphere.metallic = false;
+						sphere.transparent = true;
+                        if (type_gen < 0.1f) {
+							sphere.roughness = 0.025f;
+						} else {
+							sphere.roughness = 0.35f;
+						}
+					} else if (type_gen < 0.6f) {
+						// Create a metallic sphere
+						sphere.metallic = true;
+						sphere.transparent = false;
+                        if (type_gen < 0.4f) {
+                            sphere.roughness = type_gen - 0.2f;
+                        } else {
+                            sphere.roughness = 0.4f + 2.0f * (type_gen - 0.4f);
+                        }
+					} else {
+						// Create a non-metallic, non-transparent sphere
+						sphere.metallic = false;
+						sphere.transparent = false;
+                        if (type_gen < 0.4f) {
+                            sphere.roughness = (type_gen - 0.2f) * 0.5f;
+                        } else {
+                            sphere.roughness = 0.4f + 2.0f * (type_gen - 0.4f);
+                        }
+					}
+
                     // Create random spheres
                     sphere.center = make_float3(15.0f * (rnd_f() - .5f), 0.0f, 15.0f * (rnd_f() - .5f));
 				    sphere.radius = 0.5f;
                     sphere.color = make_float3(rnd_f(), rnd_f(), rnd_f());
                     sphere.specular = sphere.color;
-                    int rgh = rnd_f();
-                    if (rgh < 0.4f)
-						sphere.roughness = rnd_f() * 0.2f + 0.1f;
-					else if (rgh < 0.8f)
-						sphere.roughness = rnd_f() * 0.1f + 0.9f;
-                    else
-						sphere.roughness = rnd_f();
+
+                    //sphere.roughness = 0.05f;
 
                     // Check for overlapping spheres
                     for (int j = 0; j < spheres.size(); ++j) {
@@ -507,7 +535,7 @@ int main(int argc, char* argv[])
             size_t      miss_record_size = sizeof(MissSbtRecord);
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&miss_record), miss_record_size));
             MissSbtRecord ms_sbt;
-            ms_sbt.data = { 0.812f, 0.925f, 0.969f };
+            ms_sbt.data = { 0.35f, 0.762f, 0.95f };
             OPTIX_CHECK(optixSbtRecordPackHeader(miss_prog_group, &ms_sbt));
             CUDA_CHECK(cudaMemcpy(
                 reinterpret_cast<void*>(miss_record),
@@ -535,6 +563,8 @@ int main(int argc, char* argv[])
                 hg_sbts[i].data.emission_color = make_float3(0.0f, 0.0f, 0.0f);
                 hg_sbts[i].data.specular = spheres[i].specular;
                 hg_sbts[i].data.roughness = spheres[i].roughness;
+                hg_sbts[i].data.metallic = spheres[i].metallic;
+                hg_sbts[i].data.transparent = spheres[i].transparent;
             }
 
             // Copy the hit group SBT records to the device

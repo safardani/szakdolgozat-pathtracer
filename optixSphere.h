@@ -3,9 +3,13 @@ struct SphereData
 {
     float3 center;
     float radius;
+
     float3 color;
     float3 specular;   // Specular reflectance of the material.
-    float  roughness;  // Roughness value of the material.
+
+    float roughness;  // Roughness value of the material.
+    bool metallic;     // Whether the material is metallic or not.
+    bool transparent;  // Whether the material is transparent or not.
 };
 
 // The Params structure holds the scene parameters that are read by the ray generation program.
@@ -59,4 +63,6 @@ struct HitGroupData
     float3 diffuse_color;
     float3 specular;   // Specular reflectance of the material.
     float  roughness;  // Roughness value of the material.
+    bool metallic;     // Whether the material is metallic or not.
+    bool transparent;  // Whether the material is transparent or not.
 };

@@ -151,6 +151,7 @@ static __forceinline__ __device__ Payload getPayloadCH()
 static __forceinline__ __device__ Payload getPayloadMiss()
 {
     Payload p = {};
+
     return p;
 }
 
@@ -354,8 +355,15 @@ extern "C" __global__ void __miss__radiance()
     MissData* rt_data = reinterpret_cast<MissData*>(optixGetSbtDataPointer());
     Payload prd = getPayloadMiss();
 
+    float3 ray_dir = optixGetWorldRayDirection();
+    float3 sunlight_direction = normalize(make_float3(0.9f, 1.0f, 3.0f));
+
     // Set the ray's payload to the miss color (in this case black)
-    prd.radiance = make_float3(rt_data->r, rt_data->g, rt_data->b);
+    if (length(ray_dir - sunlight_direction) < 0.1f)
+		prd.radiance = make_float3(15.0f);
+	else
+		prd.radiance = make_float3(rt_data->r, rt_data->g, rt_data->b);
+
     prd.emitted = make_float3(0.f);
     prd.done = true;
 
@@ -403,6 +411,21 @@ extern "C" __global__ void __closesthit__radiance()
     else
         p.emitted = make_float3(0.0f);
 
+    // Calculate the roughness, and square it to make it more pronounced
+    float roughness = hit_group_data->roughness;
+    roughness *= roughness;
+
+    bool metallic = hit_group_data->metallic;
+    bool transparent = hit_group_data->transparent;
+
+    // Use the provided color and other properties from the hit group data
+    const float3 diffuse_albedo = hit_group_data->diffuse_color;
+    const float3 specular_albedo = hit_group_data->specular;
+
+    // Compute the Fresnel-Schlick term
+    float3 F0 = metallic ? make_float3(0.8f) : make_float3(0.04f); // Assume non-metallic
+    float3 F = fresnelSchlick(fmaxf(dot(normal_intersect, -ray_dir), 0.0f), F0);
+
     unsigned int seed = p.seed;
     {
         /*// For cosine-weighted hemisphere sampling, TODO reimplement later
@@ -418,18 +441,44 @@ extern "C" __global__ void __closesthit__radiance()
         p.direction = w_in;
         */
         
+        // Combine the specular and diffuse components
+        float3 specular_component = F * specular_albedo;
+        float3 diffuse_component = (1.0f - F) * diffuse_albedo;
+        
+        // Combine the specular and diffuse components by adding them together
+        float3 material_response = metallic ? specular_component : diffuse_component + specular_component;
+        
+        // Calculate the perfect specular reflection direction and the diffuse reflection direction
+        float3 specular_dir = -normalize(reflect(-ray_dir, normal_intersect));
+        float3 diffuse_dir = normalize(normal_intersect + random_in_unit_sphere(p.seed));
+        
+        float3 new_dir;
+        unsigned int seed = p.seed;
+        float random = rnd(seed);
+
+        // Calculate the probability of sampling the diffuse component
+        if (random < F.x || metallic) {
+            // Specular component
+            new_dir = normalize((1.0f - roughness) * specular_dir + roughness * diffuse_dir);
+        } else {
+            // Diffuse component
+            new_dir = diffuse_dir;
+        }
+        float3 cur_attenuation = material_response * p.attenuation;
+        
         // Set the payload data for the next iteration of the ray
-        p.direction = normalize(normal_intersect + random_in_unit_sphere(seed));
+        p.direction = new_dir;
         p.origin = intersect_point;
         
         // Calculate the diffuse component of the material
-        p.attenuation *= hit_group_data->diffuse_color;
+        p.attenuation = cur_attenuation;
     }
 
     p.seed = seed;
 
     // Define the sunlight properties
     float3 sunlight_direction = normalize(make_float3(0.9f, 1.0f, 3.0f));
+    float3 sunlight_center_direction = sunlight_direction;
     float3 sunlight_emission = make_float3(15.0f);
     float sunlight_spread = 0.1f;
 
@@ -466,11 +515,22 @@ extern "C" __global__ void __closesthit__radiance()
 
         // If the light is not occluded, calculate the weight
         if (!occluded)
-            weight = nDl;
+            weight = metallic ? 0.0f : nDl;
+
+            // Calculate reflection direction
+            float3 reflection_direction = reflect(-ray_dir, normal_intersect);
+            reflection_direction = - normalize(reflection_direction + roughness * normalize(random_in_unit_sphere(p.seed)));
+
+            // Calculate if we need to show the specular highlight
+            if (length(reflection_direction - sunlight_center_direction) < sunlight_spread)
+            {
+                p.radiance = F * sunlight_emission * nDl; // TODO do we need to multiply by nDl?
+            }
+
     }
 
     // Calculate the radiance of the sunlight sample
-    p.radiance = sunlight_emission * weight;
+    p.radiance += sunlight_emission * weight;
     p.done = false;
 
     setPayloadCH(p);
