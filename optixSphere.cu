@@ -200,6 +200,15 @@ static __forceinline__ __device__ void setPayloadMiss(Payload p)
     optixSetPayload_16(p.done);
 }
 
+// Helper function to create an orthonormal basis given a normal vector
+static __forceinline__ __device__ void createOrthogonalSystem(const float3& w, float3& u, float3& v) {
+    if (fabs(w.x) > fabs(w.y))
+        u = normalize(cross(make_float3(0.0f, 1.0f, 0.0f), w));
+    else
+        u = normalize(cross(make_float3(1.0f, 0.0f, 0.0f), w));
+    v = cross(w, u);
+}
+
 // A helper function to generate a random 3D vector that is distributed as a cosine-weighted hemisphere around the z-axis
 static __forceinline__ __device__ void cosine_sample_hemisphere(const float u1, const float u2, float3& p)
 {
@@ -236,6 +245,23 @@ static __forceinline__ __device__ float3 tonemap(float3 x)
     return ((x * (A * x + C * B) + D * E) / (x * (A * x + B) + D * F)) - E / F;
 }
 
+static __forceinline__ __device__ float3 defocus_disk_sample(float3 u, float3 v, unsigned int seed) {
+    // Returns a random point in the camera defocus disk.
+
+    const float r = sqrt(rnd(seed));  // Uniformly distributed radius
+    const float theta = 2.0f * M_PI * rnd(seed);  // Uniformly distributed angle
+
+    float blurriness = 0.01f;
+
+    // Unit disk x, y coordinates
+    const float x = blurriness * sqrt(r) * cosf(theta);
+    const float y = blurriness * sqrt(r) * sinf(theta);
+
+    float3 dir = (x * u + y * v);
+
+    return dir;
+}
+
 // The ray generation program. This is called once per pixel, and its job is to generate the primary rays.
 extern "C" __global__ void __raygen__rg()
 {
@@ -247,6 +273,8 @@ extern "C" __global__ void __raygen__rg()
     const float3      U = rtData->camera_u;
     const float3      V = rtData->camera_v;
     const float3      W = rtData->camera_w;
+
+    float disk_radius = 2.4f;
 
     // Compute the launch index, which corresponds to the pixel indices in the image
     const uint3 idx = optixGetLaunchIndex();
@@ -263,13 +291,16 @@ extern "C" __global__ void __raygen__rg()
     {
         // Generate a random subpixel offset for anti-aliasing
         float2 subpixel_jitter = make_float2(rnd(seed), rnd(seed));
+        float focus_distance = 1.0f;
 
         // Normalized device coordinates (NDC) are in the range [-1, 1] for both x and y
         float2 d = 2.0f * make_float2((idx.x + subpixel_jitter.x) / (dim.x), (idx.y + subpixel_jitter.y) / (dim.y)) - 1.0f;
         
         // Calculate the ray origin and direction for the current pixel
-        float3 origin = rtData->cam_eye;
-        float3 direction = normalize(d.x * U + d.y * V + W);
+        float3 origin = defocus_disk_sample(U,V, seed); // rtData->cam_eye;
+        float3 target = focus_distance * (d.x * U + d.y * V + W);
+        float3 direction = normalize(target - origin);
+        origin += rtData->cam_eye;
 
         // Reset the payload data for this ray (every iteration of the loop)
         Payload payload;
@@ -335,15 +366,6 @@ extern "C" __global__ void __raygen__rg()
 static __forceinline__ __device__ float3 fresnelSchlick(float cosTheta, const float3& F0)
 {
     return F0 + (make_float3(1.0f) - F0) * powf(1.0f - cosTheta, 5.0f);
-}
-
-// Helper function to create an orthonormal basis given a normal vector
-static __forceinline__ __device__ void createOrthogonalSystem(const float3& w, float3& u, float3& v) {
-    if (fabs(w.x) > fabs(w.y))
-        u = normalize(cross(make_float3(0.0f, 1.0f, 0.0f), w));
-    else
-        u = normalize(cross(make_float3(1.0f, 0.0f, 0.0f), w));
-    v = cross(w, u);
 }
 
 // The miss program. This is called for any ray that does not hit geometry.
@@ -417,21 +439,54 @@ extern "C" __global__ void __closesthit__radiance()
 
     bool metallic = hit_group_data->metallic;
     bool transparent = hit_group_data->transparent;
+    
+    // Compute the Fresnel-Schlick term
+    float3 F0 = (1 - make_float3(1.45f)) / (1 + make_float3(1.45f)); // Assume non-metallic
+    F0 = F0 * F0;
+    float3 F = fresnelSchlick(fmaxf(dot(normal_intersect, -ray_dir), 0.0f), F0);
+
+    if (transparent) {
+        float3 refracted_ray;
+
+		// calcualte if we are entering or exiting the sphere
+		bool entering = dot(ray_dir, normal_intersect) < 0.0f;
+		
+        float sphere_ior = 1.45f;
+		float refraction_ratio = !entering ? 1.0 / sphere_ior : sphere_ior;
+        bool refracted = refract(refracted_ray, ray_dir, normal_intersect, refraction_ratio);
+        float3 normal = entering ? normal_intersect : -normal_intersect;
+
+        unsigned int seed = p.seed;
+        if ((rnd(seed) > F.x || !entering) && refracted)
+        {
+            p.direction = normalize(refracted_ray + roughness * normalize(random_in_unit_sphere(seed)));
+        } else {
+            p.direction = normalize(reflect(ray_dir, normal) + roughness * normalize(random_in_unit_sphere(seed)));
+        }
+		
+		p.origin = intersect_point;
+		
+        // print depth
+        // printf("Depth: %d\n", p.depth);
+		
+		setPayloadCH(p);
+        return;
+    }
 
     // Use the provided color and other properties from the hit group data
     const float3 diffuse_albedo = hit_group_data->diffuse_color;
     const float3 specular_albedo = hit_group_data->specular;
 
     // Compute the Fresnel-Schlick term
-    float3 F0 = metallic ? make_float3(0.8f) : make_float3(0.04f); // Assume non-metallic
-    float3 F = fresnelSchlick(fmaxf(dot(normal_intersect, -ray_dir), 0.0f), F0);
-
+    F0 = metallic ? make_float3(0.8f) : make_float3(0.04f); // Assume non-metallic
+    F = fresnelSchlick(fmaxf(dot(normal_intersect, -ray_dir), 0.0f), F0);
+		
     unsigned int seed = p.seed;
     {
         /*// For cosine-weighted hemisphere sampling, TODO reimplement later
         const float z1 = rnd(seed);
         const float z2 = rnd(seed);
-    
+
         // Generate a random direction for diffuse reflection
         float3 w_in;
         cosine_sample_hemisphere(z1, z2, w_in);
@@ -440,18 +495,18 @@ extern "C" __global__ void __closesthit__radiance()
 
         p.direction = w_in;
         */
-        
+
         // Combine the specular and diffuse components
         float3 specular_component = F * specular_albedo;
         float3 diffuse_component = (1.0f - F) * diffuse_albedo;
-        
+
         // Combine the specular and diffuse components by adding them together
         float3 material_response = metallic ? specular_component : diffuse_component + specular_component;
-        
+
         // Calculate the perfect specular reflection direction and the diffuse reflection direction
         float3 specular_dir = -normalize(reflect(-ray_dir, normal_intersect));
         float3 diffuse_dir = normalize(normal_intersect + random_in_unit_sphere(p.seed));
-        
+
         float3 new_dir;
         unsigned int seed = p.seed;
         float random = rnd(seed);
@@ -460,16 +515,17 @@ extern "C" __global__ void __closesthit__radiance()
         if (random < F.x || metallic) {
             // Specular component
             new_dir = normalize((1.0f - roughness) * specular_dir + roughness * diffuse_dir);
-        } else {
+        }
+        else {
             // Diffuse component
             new_dir = diffuse_dir;
         }
         float3 cur_attenuation = material_response * p.attenuation;
-        
+
         // Set the payload data for the next iteration of the ray
         p.direction = new_dir;
         p.origin = intersect_point;
-        
+
         // Calculate the diffuse component of the material
         p.attenuation = cur_attenuation;
     }
@@ -485,11 +541,11 @@ extern "C" __global__ void __closesthit__radiance()
     // Sample the sun's direction
     const float r = sqrt(rnd(seed));  // Uniformly distributed radius
     const float theta = 2.0f * M_PI * rnd(seed);  // Uniformly distributed angle
-    
+
     // Unit disk x, y coordinates
     const float x = sqrt(r) * cosf(theta);
     const float y = sqrt(r) * sinf(theta);
-    
+
     // Construct an orthonormal basis with w as sunlight_direction
     float3 w = sunlight_direction;
     float3 u, v;
@@ -517,15 +573,15 @@ extern "C" __global__ void __closesthit__radiance()
         if (!occluded)
             weight = metallic ? 0.0f : nDl;
 
-            // Calculate reflection direction
-            float3 reflection_direction = reflect(-ray_dir, normal_intersect);
-            reflection_direction = - normalize(reflection_direction + roughness * normalize(random_in_unit_sphere(p.seed)));
+        // Calculate reflection direction
+        float3 reflection_direction = reflect(-ray_dir, normal_intersect);
+        reflection_direction = -normalize(reflection_direction + roughness * normalize(random_in_unit_sphere(p.seed)));
 
-            // Calculate if we need to show the specular highlight
-            if (length(reflection_direction - sunlight_center_direction) < sunlight_spread)
-            {
-                p.radiance = F * sunlight_emission * nDl; // TODO do we need to multiply by nDl?
-            }
+        // Calculate if we need to show the specular highlight
+        if (length(reflection_direction - sunlight_center_direction) < sunlight_spread)
+        {
+            p.radiance = F * sunlight_emission * nDl; // TODO do we need to multiply by nDl?
+        }
 
     }
 

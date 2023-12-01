@@ -55,9 +55,9 @@ typedef SbtRecord<HitGroupData> HitGroupSbtRecord;
 // Configure the camera for the scene. Sets the eye position, look-at point, up direction, etc.
 void configureCamera(sutil::Camera& cam, const uint32_t width, const uint32_t height)
 {
-    cam.setEye({ 0.0f, 3.0f, -10.0f });
+    cam.setEye({ 0.0f, 2.0f, -10.0f });
     cam.setLookat({ 0.0f, 0.0f, 0.0f });
-    cam.setUp(normalize(make_float3(0.0f, 10.0f, 3.0f )));
+    cam.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f )));
     cam.setFovY(90.0f);
     cam.setAspectRatio((float)width / (float)height);
 }
