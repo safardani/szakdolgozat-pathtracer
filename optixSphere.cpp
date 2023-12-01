@@ -175,8 +175,10 @@ int main(int argc, char* argv[])
                     sphere.roughness = 0.8f;
                     sphere.metallic = false;
                     sphere.transparent = false;
+                    sphere.emission = 0.0f;
 				} else {
                     float type_gen = rnd_f();
+                    sphere.emission = 0.0f;
 
                     if (type_gen < 0.2f) {
 						// Create a transparent sphere
@@ -200,8 +202,11 @@ int main(int argc, char* argv[])
 						// Create a non-metallic, non-transparent sphere
 						sphere.metallic = false;
 						sphere.transparent = false;
-                        if (type_gen < 0.4f) {
+                        if (type_gen < 0.8f) {
                             sphere.roughness = (type_gen - 0.2f) * 0.5f;
+                        } else if (type_gen < 0.9f) {
+                            sphere.roughness = 1.0f;
+                            sphere.emission = 100.0f;
                         } else {
                             sphere.roughness = 0.4f + 2.0f * (type_gen - 0.4f);
                         }
@@ -560,7 +565,7 @@ int main(int argc, char* argv[])
 
                 // Fill each of your SBT records with the appropriate color
                 hg_sbts[i].data.diffuse_color = spheres[i].color;  // Assuming 'spheres' is the vector of SphereData you allocated earlier.
-                hg_sbts[i].data.emission_color = make_float3(0.0f, 0.0f, 0.0f);
+				hg_sbts[i].data.emission_color = spheres[i].color * spheres[i].emission;
                 hg_sbts[i].data.specular = spheres[i].specular;
                 hg_sbts[i].data.roughness = spheres[i].roughness;
                 hg_sbts[i].data.metallic = spheres[i].metallic;

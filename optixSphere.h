@@ -6,7 +6,8 @@ struct SphereData
 
     float3 color;
     float3 specular;   // Specular reflectance of the material.
-
+    
+    float emission;
     float roughness;  // Roughness value of the material.
     bool metallic;     // Whether the material is metallic or not.
     bool transparent;  // Whether the material is transparent or not.

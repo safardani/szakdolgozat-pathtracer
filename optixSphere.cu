@@ -483,19 +483,6 @@ extern "C" __global__ void __closesthit__radiance()
 		
     unsigned int seed = p.seed;
     {
-        /*// For cosine-weighted hemisphere sampling, TODO reimplement later
-        const float z1 = rnd(seed);
-        const float z2 = rnd(seed);
-
-        // Generate a random direction for diffuse reflection
-        float3 w_in;
-        cosine_sample_hemisphere(z1, z2, w_in);
-        Onb onb(normal_intersect);
-        onb.inverse_transform(w_in);
-
-        p.direction = w_in;
-        */
-
         // Combine the specular and diffuse components
         float3 specular_component = F * specular_albedo;
         float3 diffuse_component = (1.0f - F) * diffuse_albedo;
@@ -586,7 +573,7 @@ extern "C" __global__ void __closesthit__radiance()
     }
 
     // Calculate the radiance of the sunlight sample
-    p.radiance += sunlight_emission * weight;
+    p.radiance += sunlight_emission * weight + hit_group_data->emission_color;
     p.done = false;
 
     setPayloadCH(p);
