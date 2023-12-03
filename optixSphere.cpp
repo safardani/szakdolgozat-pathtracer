@@ -841,12 +841,18 @@ int main(int argc, char* argv[])
         Params params;
         params.image_width = width;
         params.image_height = height;
+        params.accum_buffer = nullptr;
+		
+        CUDA_CHECK(cudaMalloc(
+            reinterpret_cast<void**>(&params.accum_buffer),
+            params.image_width* params.image_height * sizeof(float4)
+        ));
+		
         params.origin_x = width / 2;
         params.origin_y = height / 2;
         params.handle = gas_handle;
-        params.subframe_index = 0;
+        params.subframe_index = 0u;
         params.frame_buffer = nullptr;
-        params.accum_buffer = nullptr;
 
         // Allocate device memory for the Params structure and copy from host to device
         CUdeviceptr d_param;
@@ -1169,6 +1175,7 @@ int main(int argc, char* argv[])
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(sbt.raygenRecord)));
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(sbt.missRecordBase)));
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(sbt.hitgroupRecordBase)));
+            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(params.accum_buffer)));
 
             // Free the GAS output buffer
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_gas_output_buffer)));

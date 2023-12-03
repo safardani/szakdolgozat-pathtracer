@@ -273,6 +273,7 @@ extern "C" __global__ void __raygen__rg()
     const float3      U = params.U;
     const float3      V = params.V;
     const float3      W = params.W;
+    const int    subframe_index = params.subframe_index;
 
     float disk_radius = 2.4f;
 
@@ -280,13 +281,13 @@ extern "C" __global__ void __raygen__rg()
     const uint3 idx = optixGetLaunchIndex();
     const uint3 dim = optixGetLaunchDimensions();
 
-    unsigned int seed = tea<4>(idx.y, idx.x);
+    unsigned int seed = tea<4>(idx.y * params.image_width + idx.x, subframe_index);
 
     // Set an initial color payload for the ray which might be modified by the closest-hit or miss program
     float3       payload_rgb = make_float3(0.0f);
 
     // Sample the pixel multiple times and average the results
-    int sample_batch_count = 60;
+    int sample_batch_count = 10;
     for (size_t i = 0; i < sample_batch_count; i++)
     {
         // Generate a random subpixel offset for anti-aliasing
@@ -308,7 +309,7 @@ extern "C" __global__ void __raygen__rg()
         payload.seed = seed;
         payload.depth = 0.f;
 
-        int max_depth = 10;
+        int max_depth = 20;
         // Trace the ray into the scene
         for (;;)
         {
@@ -339,11 +340,22 @@ extern "C" __global__ void __raygen__rg()
         }
     }
 
+    const unsigned int image_index = idx.y * params.image_width + idx.x;
+    float3 accum_color = payload_rgb / sample_batch_count;
+
+    if (subframe_index > 0)
+    {
+        const float                 a = 1.0f / static_cast<float>(subframe_index + 1);
+        const float3 accum_color_prev = make_float3(params.accum_buffer[image_index]);
+        accum_color = lerp(accum_color_prev, accum_color, a);
+    }
+    params.accum_buffer[image_index] = make_float4(accum_color, 1.0f);
+
     // Exposure compensation value
     float exposure = 0.0f;
 
     // Apply exposure before tonemapping
-    payload_rgb = payload_rgb / sample_batch_count * exp2(exposure); // Incorporate exposure
+    payload_rgb = accum_color * exp2(exposure); // Incorporate exposure
 
     // Apply filmic tonemapping to the HDR values
     payload_rgb = tonemap(payload_rgb);
