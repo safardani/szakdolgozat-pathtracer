@@ -26,6 +26,10 @@
 #include <sutil/Camera.h>
 #include <sutil/Trackball.h>
 
+// Window handling
+#include <GLFW/glfw3.h>
+#include <sutil/GLDisplay.h>
+
 
 
 /**
@@ -51,15 +55,36 @@ typedef SbtRecord<RayGenData>   RayGenSbtRecord;
 typedef SbtRecord<MissData>     MissSbtRecord;
 typedef SbtRecord<HitGroupData> HitGroupSbtRecord;
 
+bool resize_dirty = false;
+bool minimized = false;
+
+// Camera state
+bool             camera_changed = true;
+sutil::Camera    camera;
+sutil::Trackball trackball;
+
+// Mouse state
+int32_t mouse_button = -1;
 
 // Configure the camera for the scene. Sets the eye position, look-at point, up direction, etc.
 void configureCamera(sutil::Camera& cam, const uint32_t width, const uint32_t height)
 {
-    cam.setEye({ 0.0f, 2.0f, -10.0f });
-    cam.setLookat({ 0.0f, 0.0f, 0.0f });
-    cam.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f )));
-    cam.setFovY(90.0f);
-    cam.setAspectRatio((float)width / (float)height);
+    camera.setEye({ 0.0f, 2.0f, -10.0f });
+    camera.setLookat({ 0.0f, 0.0f, 0.0f });
+    camera.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f )));
+    camera.setFovY(90.0f);
+    camera_changed = true;
+
+    trackball.setCamera(&camera);
+    trackball.setMoveSpeed(10.0f);
+    trackball.setReferenceFrame(
+        make_float3(1.0f, 0.0f, 0.0f),
+        make_float3(0.0f, 0.0f, 1.0f),
+        make_float3(0.0f, 1.0f, 0.0f)
+    );
+    trackball.setGimbalLock(true);
+
+    camera.setAspectRatio((float)width / (float)height);
 }
 
 
@@ -89,6 +114,209 @@ float rnd_f() {
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     return dist(rnd);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
+{
+    double xpos, ypos;
+    glfwGetCursorPos(window, &xpos, &ypos);
+
+    if (action == GLFW_PRESS)
+    {
+        mouse_button = button;
+        trackball.startTracking(static_cast<int>(xpos), static_cast<int>(ypos));
+    }
+    else
+    {
+        mouse_button = -1;
+    }
+}
+
+
+static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos)
+{
+    Params* params = static_cast<Params*>(glfwGetWindowUserPointer(window));
+
+    if (mouse_button == GLFW_MOUSE_BUTTON_LEFT)
+    {
+        trackball.setViewMode(sutil::Trackball::LookAtFixed);
+
+
+
+
+        // error happens in next line
+        trackball.updateTracking(static_cast<int>(xpos), static_cast<int>(ypos), params->image_width, params->image_height);
+        camera_changed = true;
+    }
+    else if (mouse_button == GLFW_MOUSE_BUTTON_RIGHT)
+    {
+        trackball.setViewMode(sutil::Trackball::EyeFixed);
+        trackball.updateTracking(static_cast<int>(xpos), static_cast<int>(ypos), params->image_width, params->image_height);
+        camera_changed = true;
+    }
+}
+
+
+static void windowSizeCallback(GLFWwindow* window, int32_t res_x, int32_t res_y)
+{
+    // Keep rendering at the current resolution when the window is minimized.
+    if (minimized)
+        return;
+
+    // Output dimensions must be at least 1 in both x and y.
+    sutil::ensureMinimumSize(res_x, res_y);
+
+    Params* params = static_cast<Params*>(glfwGetWindowUserPointer(window));
+    params->image_width = res_x;
+    params->image_height = res_y;
+    camera_changed = true;
+    resize_dirty = true;
+}
+
+
+static void windowIconifyCallback(GLFWwindow* window, int32_t iconified)
+{
+    minimized = (iconified > 0);
+}
+
+
+static void keyCallback(GLFWwindow* window, int32_t key, int32_t /*scancode*/, int32_t action, int32_t /*mods*/)
+{
+    if (action == GLFW_PRESS)
+    {
+        if (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE)
+        {
+            glfwSetWindowShouldClose(window, true);
+        }
+    }
+    else if (key == GLFW_KEY_G)
+    {
+        // toggle UI draw
+    }
+}
+
+
+static void scrollCallback(GLFWwindow* window, double xscroll, double yscroll)
+{
+    if (trackball.wheelEvent((int)yscroll))
+        camera_changed = true;
+}
+
+void handleCameraUpdate(Params& params)
+{
+    if (!camera_changed)
+        return;
+    camera_changed = false;
+
+    camera.setAspectRatio(static_cast<float>(params.image_width) / static_cast<float>(params.image_height));
+    params.eye = camera.eye();
+    camera.UVWFrame(params.U, params.V, params.W);
+}
+
+void handleResize(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
+{
+    if (!resize_dirty)
+        return;
+    resize_dirty = false;
+
+    output_buffer.resize(params.image_width, params.image_height);
+
+    // Realloc accumulation buffer
+    CUDA_CHECK(cudaFree(reinterpret_cast<void*>(params.accum_buffer)));
+    CUDA_CHECK(cudaMalloc(
+        reinterpret_cast<void**>(&params.accum_buffer),
+        params.image_width * params.image_height * sizeof(float4)
+    ));
+}
+
+void updateState(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
+{
+    //printf("updateState_1: %d\n", camera_changed);
+    // Update params on device
+    if (camera_changed || resize_dirty)
+        params.subframe_index = 0;
+
+    handleCameraUpdate(params);
+    handleResize(output_buffer, params);
+    //printf("updateState_2: %d\n", camera_changed);
+}
+
+
+// void launchSubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, PathTracerState& state)
+// {
+//     // Launch
+//     uchar4* result_buffer_data = output_buffer.map();
+//     state.params.frame_buffer = result_buffer_data;
+//     CUDA_CHECK(cudaMemcpyAsync(
+//         reinterpret_cast<void*>(state.d_params),
+//         &state.params, sizeof(Params),
+//         cudaMemcpyHostToDevice, state.stream
+//     ));
+// 
+//     OPTIX_CHECK(optixLaunch(
+//         state.pipeline,
+//         state.stream,
+//         reinterpret_cast<CUdeviceptr>(state.d_params),
+//         sizeof(Params),
+//         &state.sbt,
+//         state.params.width,   // launch width
+//         state.params.height,  // launch height
+//         1                     // launch depth
+//     ));
+//     output_buffer.unmap();
+//     CUDA_SYNC_CHECK();
+// }
+
+
+void displaySubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, sutil::GLDisplay& gl_display, GLFWwindow* window)
+{
+    // Display
+    int framebuf_res_x = 0;  // The display's resolution (could be HDPI res)
+    int framebuf_res_y = 0;  //
+    glfwGetFramebufferSize(window, &framebuf_res_x, &framebuf_res_y);
+    gl_display.display(
+        output_buffer.width(),
+        output_buffer.height(),
+        framebuf_res_x,
+        framebuf_res_y,
+        output_buffer.getPBO()
+    );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 int main(int argc, char* argv[])
@@ -594,7 +822,274 @@ int main(int argc, char* argv[])
 
         // Create an output buffer for rendering the final image
         sutil::CUDAOutputBuffer<uchar4> output_buffer(sutil::CUDAOutputBufferType::CUDA_DEVICE, width, height);
+		
 
+
+
+
+		
+
+
+
+        std::string outfile;
+        sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::GL_INTEROP;
+        CUstream stream;
+        CUDA_CHECK(cudaStreamCreate(&stream));
+		int samples_per_launch = 0;
+
+        // Set up launch parameters
+        Params params;
+        params.image_width = width;
+        params.image_height = height;
+        params.origin_x = width / 2;
+        params.origin_y = height / 2;
+        params.handle = gas_handle;
+        params.subframe_index = 0;
+        params.frame_buffer = nullptr;
+        params.accum_buffer = nullptr;
+
+        // Allocate device memory for the Params structure and copy from host to device
+        CUdeviceptr d_param;
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_param), sizeof(Params)));
+        CUDA_CHECK(cudaMemcpy(
+            reinterpret_cast<void*>(d_param),
+            &params, sizeof(params),
+            cudaMemcpyHostToDevice
+        ));
+
+        for (int i = 1; i < argc; ++i)
+        {
+            const std::string arg = argv[i];
+            if (arg == "--help" || arg == "-h")
+            {
+                printUsageAndExit(argv[0]);
+            }
+            else if (arg == "--no-gl-interop")
+            {
+                output_buffer_type = sutil::CUDAOutputBufferType::CUDA_DEVICE;
+            }
+            else if (arg == "--file" || arg == "-f")
+            {
+                if (i >= argc - 1)
+                    printUsageAndExit(argv[0]);
+                outfile = argv[++i];
+            }
+            else if (arg.substr(0, 6) == "--dim=")
+            {
+                const std::string dims_arg = arg.substr(6);
+                int w, h;
+                sutil::parseDimensions(dims_arg.c_str(), w, h);
+                params.image_width = w;
+                params.image_height = h;
+            }
+            else if (arg == "--launch-samples" || arg == "-s")
+            {
+                if (i >= argc - 1)
+                    printUsageAndExit(argv[0]);
+                samples_per_launch = atoi(argv[++i]);
+            }
+            else
+            {
+                std::cerr << "Unknown option '" << argv[i] << "'\n";
+                printUsageAndExit(argv[0]);
+            }
+        }
+
+
+
+        if (outfile.empty())
+        {
+            GLFWwindow* window = sutil::initUI("optixPathTracer", params.image_width, params.image_height);
+            glfwSetMouseButtonCallback(window, mouseButtonCallback);
+            glfwSetCursorPosCallback(window, cursorPosCallback);
+            glfwSetWindowSizeCallback(window, windowSizeCallback);
+            glfwSetWindowIconifyCallback(window, windowIconifyCallback);
+            glfwSetKeyCallback(window, keyCallback);
+            glfwSetScrollCallback(window, scrollCallback);
+            glfwSetWindowUserPointer(window, &params);
+
+            //
+            // Render loop
+            //
+            {
+                sutil::CUDAOutputBuffer<uchar4> output_buffer(
+                    output_buffer_type,
+                    params.image_width,
+                    params.image_height
+                );
+
+                output_buffer.setStream(stream);
+                sutil::GLDisplay gl_display;
+
+                std::chrono::duration<double> state_update_time(0.0);
+                std::chrono::duration<double> render_time(0.0);
+                std::chrono::duration<double> display_time(0.0);
+
+                do
+                {
+                    auto t0 = std::chrono::steady_clock::now();
+                    glfwPollEvents();
+
+                    updateState(output_buffer, params);
+                    auto t1 = std::chrono::steady_clock::now();
+                    state_update_time += t1 - t0;
+                    t0 = t1;
+
+                    // launchSubframe(output_buffer, state);
+
+                    // Launch
+                    uchar4* result_buffer_data = output_buffer.map();
+                    params.frame_buffer = result_buffer_data;
+                    CUDA_CHECK(cudaMemcpyAsync(
+                        reinterpret_cast<void*>(d_param),
+                        &params, sizeof(Params),
+                        cudaMemcpyHostToDevice, stream
+                    ));
+
+                    OPTIX_CHECK(optixLaunch(
+                        pipeline,
+                        stream,
+                        /*reinterpret_cast<CUdeviceptr>*/(d_param),
+                        sizeof(Params),
+                        &sbt,
+                        params.image_width,   // launch width
+                        params.image_height,  // launch height
+                        1                     // launch depth
+                    ));
+                    output_buffer.unmap();
+                    CUDA_SYNC_CHECK();
+                    // printf("endLoop: %d\n", camera_changed);
+
+
+                    t1 = std::chrono::steady_clock::now();
+                    render_time += t1 - t0;
+                    t0 = t1;
+
+                    displaySubframe(output_buffer, gl_display, window);
+                    t1 = std::chrono::steady_clock::now();
+                    display_time += t1 - t0;
+
+                    sutil::displayStats(state_update_time, render_time, display_time);
+
+                    glfwSwapBuffers(window);
+
+                    ++params.subframe_index;
+
+                } while (!glfwWindowShouldClose(window));
+                CUDA_SYNC_CHECK();
+            }
+
+            sutil::cleanupUI(window);
+        }
+        else
+        {
+            if (output_buffer_type == sutil::CUDAOutputBufferType::GL_INTEROP)
+            {
+                sutil::initGLFW();  // For GL context
+                sutil::initGL();
+            }
+
+            {
+                // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
+
+                sutil::CUDAOutputBuffer<uchar4> output_buffer(
+                    output_buffer_type,
+                    params.image_width,
+                    params.image_height
+                );
+
+                handleCameraUpdate(params);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+				
+                handleResize(output_buffer, params);
+				
+                // launchSubframe(output_buffer, state);
+
+                    // Launch
+                uchar4* result_buffer_data = output_buffer.map();
+                params.frame_buffer = result_buffer_data;
+                CUDA_CHECK(cudaMemcpyAsync(
+                    reinterpret_cast<void*>(d_param),
+                    &params, sizeof(Params),
+                    cudaMemcpyHostToDevice, stream
+                ));
+
+                OPTIX_CHECK(optixLaunch(
+                    pipeline,
+                    stream,
+                    /*reinterpret_cast<CUdeviceptr>*/(d_param),
+                    sizeof(Params),
+                    &sbt,
+                    params.image_width,   // launch width
+                    params.image_height,  // launch height
+                    1                     // launch depth
+                ));
+                output_buffer.unmap();
+                CUDA_SYNC_CHECK();
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                sutil::ImageBuffer buffer;
+                buffer.data = output_buffer.getHostPointer();
+                buffer.width = output_buffer.width();
+                buffer.height = output_buffer.height();
+                buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
+
+                sutil::saveImage(outfile.c_str(), buffer, false);
+            }
+
+            if (output_buffer_type == sutil::CUDAOutputBufferType::GL_INTEROP)
+            {
+                glfwTerminate();
+            }
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+		
+        /*
         //
         // Launch OptiX ray tracing pipeline
         //
@@ -621,7 +1116,7 @@ int main(int argc, char* argv[])
             ));
 
             // Launch the pipeline
-            OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(Params), &sbt, width, height, /*depth=*/1));
+            OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(Params), &sbt, width, height, 1));
             CUDA_SYNC_CHECK();
 
             // Unmap the output buffer after the launch has finished
@@ -645,6 +1140,26 @@ int main(int argc, char* argv[])
             else
                 sutil::saveImage(outfile.c_str(), buffer, false); // Otherwise, save the image to disk as specified by the user
         }
+        */
+			
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+			
+			
 
         //
         // Cleanup

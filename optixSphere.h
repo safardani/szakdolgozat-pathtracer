@@ -16,11 +16,19 @@ struct SphereData
 // The Params structure holds the scene parameters that are read by the ray generation program.
 struct Params
 {
-    uchar4*                image;         // Pointer to the output image buffer (RGBA uchar)
     unsigned int           image_width;   // Width of the output image in pixels
     unsigned int           image_height;  // Height of the output image in pixels
     int                    origin_x;      // X-coordinate of the image origin (not used in this sample)
     int                    origin_y;      // Y-coordinate of the image origin (not used in this sample)
+    int                    subframe_index;
+
+    uchar4*                frame_buffer;
+    float4*                accum_buffer;
+
+    float3       eye;
+    float3       U;
+    float3       V;
+    float3       W;
 
     SphereData*            spheres;       // Pointer to the array of spheres in the scene
     unsigned int           num_spheres;   // Number of spheres in the scene

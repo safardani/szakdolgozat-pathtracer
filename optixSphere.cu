@@ -269,10 +269,10 @@ extern "C" __global__ void __raygen__rg()
     const RayGenData* rtData = (RayGenData*)optixGetSbtDataPointer();
     
     // Get the camera basis vectors and eye position from the ray generation data.
-    const float3      eye = rtData->cam_eye;
-    const float3      U = rtData->camera_u;
-    const float3      V = rtData->camera_v;
-    const float3      W = rtData->camera_w;
+    const float3      eye = params.eye;
+    const float3      U = params.U;
+    const float3      V = params.V;
+    const float3      W = params.W;
 
     float disk_radius = 2.4f;
 
@@ -286,7 +286,7 @@ extern "C" __global__ void __raygen__rg()
     float3       payload_rgb = make_float3(0.0f);
 
     // Sample the pixel multiple times and average the results
-    int sample_batch_count = 600;
+    int sample_batch_count = 60;
     for (size_t i = 0; i < sample_batch_count; i++)
     {
         // Generate a random subpixel offset for anti-aliasing
@@ -297,10 +297,10 @@ extern "C" __global__ void __raygen__rg()
         float2 d = 2.0f * make_float2((idx.x + subpixel_jitter.x) / (dim.x), (idx.y + subpixel_jitter.y) / (dim.y)) - 1.0f;
         
         // Calculate the ray origin and direction for the current pixel
-        float3 origin = defocus_disk_sample(U,V, seed); // rtData->cam_eye;
+        float3 origin = defocus_disk_sample(U,V, seed);
         float3 target = focus_distance * (d.x * U + d.y * V + W);
         float3 direction = normalize(target - origin);
-        origin += rtData->cam_eye;
+        origin += params.eye;
 
         // Reset the payload data for this ray (every iteration of the loop)
         Payload payload;
@@ -308,7 +308,7 @@ extern "C" __global__ void __raygen__rg()
         payload.seed = seed;
         payload.depth = 0.f;
 
-        int max_depth = 20;
+        int max_depth = 10;
         // Trace the ray into the scene
         for (;;)
         {
@@ -358,8 +358,7 @@ extern "C" __global__ void __raygen__rg()
         powf(payload_rgb.y, 1.0f / gamma),
         powf(payload_rgb.z, 1.0f / gamma));
 
-    // Write the tonemapped and gamma-corrected pixel color to the image buffer
-    params.image[idx.y * params.image_width + idx.x] = make_color(payload_rgb);
+	params.frame_buffer[idx.y * params.image_width + idx.x] = make_color(payload_rgb);
 }
 
 // Fresnel-Schlick implementation for specular reflection
@@ -425,7 +424,7 @@ extern "C" __global__ void __closesthit__radiance()
     float3 normal_intersect = normalize(optixTransformNormalFromObjectToWorldSpace(localcoords_obj_normal));
 
     // Read the existing payload. This payload was set by the raygen program.
-    Payload p = getPayloadCH();
+    Payload p = getPayloadCH(); 
 
     // If this is the first bounce, set the emitted color to the object's emission color
     if (p.depth == 0)
