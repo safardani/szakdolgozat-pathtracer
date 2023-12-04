@@ -297,11 +297,20 @@ extern "C" __global__ void __raygen__rg()
         // Normalized device coordinates (NDC) are in the range [-1, 1] for both x and y
         float2 d = 2.0f * make_float2((idx.x + subpixel_jitter.x) / (dim.x), (idx.y + subpixel_jitter.y) / (dim.y)) - 1.0f;
         
-        // Calculate the ray origin and direction for the current pixel
-        float3 origin = defocus_disk_sample(U,V, seed);
-        float3 target = focus_distance * (d.x * U + d.y * V + W);
-        float3 direction = normalize(target - origin);
-        origin += params.eye;
+        float3 origin;
+        float3 target;
+        float3 direction;
+		
+        if (params.dof) {
+            // Calculate the ray origin and direction for the current pixel
+            origin = defocus_disk_sample(U,V, seed);
+            target = focus_distance * (d.x * U + d.y * V + W);
+            direction = normalize(target - origin);
+            origin += params.eye;
+        } else {
+            origin = params.eye;
+			direction = normalize(d.x * U + d.y * V + W);
+        }
 
         // Reset the payload data for this ray (every iteration of the loop)
         Payload payload;
@@ -393,9 +402,9 @@ extern "C" __global__ void __miss__radiance()
 
     // Set the ray's payload to the miss color (in this case black)
     if (length(ray_dir - sunlight_direction) < 0.1f)
-		prd.radiance = make_float3(15.0f);
+		prd.radiance += make_float3(15.0f);
 	else
-		prd.radiance = make_float3(rt_data->r, rt_data->g, rt_data->b);
+		prd.radiance += make_float3(rt_data->r, rt_data->g, rt_data->b);
 
     prd.emitted = make_float3(0.f);
     prd.done = true;
@@ -570,17 +579,6 @@ extern "C" __global__ void __closesthit__radiance()
         // If the light is not occluded, calculate the weight
         if (!occluded)
             weight = metallic ? 0.0f : nDl;
-
-        // Calculate reflection direction
-        float3 reflection_direction = reflect(-ray_dir, normal_intersect);
-        reflection_direction = -normalize(reflection_direction + roughness * normalize(random_in_unit_sphere(p.seed)));
-
-        // Calculate if we need to show the specular highlight
-        if (length(reflection_direction - sunlight_center_direction) < sunlight_spread)
-        {
-            p.radiance = F * sunlight_emission * nDl; // TODO do we need to multiply by nDl?
-        }
-
     }
 
     // Calculate the radiance of the sunlight sample

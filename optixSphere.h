@@ -24,6 +24,7 @@ struct Params
 
     uchar4*                frame_buffer;
     float4*                accum_buffer;
+    bool dof;
 
     float3       eye;
     float3       U;

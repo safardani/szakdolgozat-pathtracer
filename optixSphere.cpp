@@ -59,6 +59,7 @@ bool resize_dirty = false;
 bool minimized = false;
 
 // Camera state
+bool dof = true;
 bool             camera_changed = true;
 sutil::Camera    camera;
 sutil::Trackball trackball;
@@ -205,7 +206,8 @@ static void keyCallback(GLFWwindow* window, int32_t key, int32_t /*scancode*/, i
     }
     else if (key == GLFW_KEY_G)
     {
-        // toggle UI draw
+        dof = !dof;
+        camera_changed = true;
     }
 }
 
@@ -250,6 +252,9 @@ void updateState(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
     if (camera_changed || resize_dirty)
         params.subframe_index = 0;
 
+	if (params.dof != dof)
+		params.dof = dof;
+	
     handleCameraUpdate(params);
     handleResize(output_buffer, params);
     //printf("updateState_2: %d\n", camera_changed);
@@ -853,6 +858,7 @@ int main(int argc, char* argv[])
         params.handle = gas_handle;
         params.subframe_index = 0u;
         params.frame_buffer = nullptr;
+        params.dof = true;
 
         // Allocate device memory for the Params structure and copy from host to device
         CUdeviceptr d_param;
