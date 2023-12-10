@@ -151,6 +151,10 @@ static __forceinline__ __device__ Payload getPayloadCH()
 static __forceinline__ __device__ Payload getPayloadMiss()
 {
     Payload p = {};
+	
+    // p.radiance.x = __uint_as_float(optixGetPayload_7());
+    // p.radiance.y = __uint_as_float(optixGetPayload_8());
+    // p.radiance.z = __uint_as_float(optixGetPayload_9());
 
     return p;
 }
@@ -582,6 +586,7 @@ extern "C" __global__ void __closesthit__radiance()
     }
 
     // Calculate the radiance of the sunlight sample
+    //p.radiance += /*sunlight_emission * weight + */hit_group_data->emission_color;
     p.radiance += sunlight_emission * weight + hit_group_data->emission_color;
     p.done = false;
 
