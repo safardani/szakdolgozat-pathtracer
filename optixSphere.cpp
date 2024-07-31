@@ -33,13 +33,14 @@
 
 
 /**
-    A Shader Binding Table (SBT) record is a data structure used by the OptiX engine to map
-    the intersection of rays with scene geometry to the appropriate shaders that should be executed.
-    The SBT record holds the function pointers and the data those shaders need. It consists of two parts:
-    1. Header: Contains the compiled shader identifiers that get executed when a ray hits the geometry.
-    2. Data: User-defined data associated with that specific hit, such as surface material properties.
+    A Shader Binding Table (SBT) record is a data structure in OptiX to map the
+    intersection of rays and geometry, to the appropriate shaders that should be executed.
+    SBT records hold the function pointers and the data those shaders need:
+
+    1. Header: Contains the shader identifiers that get executed when a ray hits the geometry.
+    2. Data: User-defined data associated with that specific hit, like the surface's material properties.
     
-    The template allows for creating SBT records tailored for different shader types (ray generation, miss, hit).
+    Template needed for creating SBT records for the different shader types (ray generation, miss, hit).
     
     @tparam T A struct representing the user-defined data payload for a specific shader type.
 */
@@ -60,8 +61,8 @@ bool minimized = false;
 
 // Camera state
 bool dof = true;
-bool             camera_changed = true;
-sutil::Camera    camera;
+bool camera_changed = true;
+sutil::Camera camera;
 sutil::Trackball trackball;
 
 // Mouse state
@@ -116,21 +117,7 @@ float rnd_f() {
     return dist(rnd);
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+// Handles mouse button events
 static void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods)
 {
     double xpos, ypos;
@@ -138,6 +125,7 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
 
     if (action == GLFW_PRESS)
     {
+        // Set the mouse button state and start tracking the position
         mouse_button = button;
         trackball.startTracking(static_cast<int>(xpos), static_cast<int>(ypos));
     }
@@ -147,40 +135,36 @@ static void mouseButtonCallback(GLFWwindow* window, int button, int action, int 
     }
 }
 
-
+// Handles mouse movement events
 static void cursorPosCallback(GLFWwindow* window, double xpos, double ypos)
 {
     Params* params = static_cast<Params*>(glfwGetWindowUserPointer(window));
 
     if (mouse_button == GLFW_MOUSE_BUTTON_LEFT)
     {
+        // Orbit mode
         trackball.setViewMode(sutil::Trackball::LookAtFixed);
-
-
-
-
-        // error happens in next line
         trackball.updateTracking(static_cast<int>(xpos), static_cast<int>(ypos), params->image_width, params->image_height);
         camera_changed = true;
     }
     else if (mouse_button == GLFW_MOUSE_BUTTON_RIGHT)
     {
+        // Look-around mode
         trackball.setViewMode(sutil::Trackball::EyeFixed);
         trackball.updateTracking(static_cast<int>(xpos), static_cast<int>(ypos), params->image_width, params->image_height);
         camera_changed = true;
     }
 }
 
-
+// Handles window resizing events
 static void windowSizeCallback(GLFWwindow* window, int32_t res_x, int32_t res_y)
 {
     // Keep rendering at the current resolution when the window is minimized.
     if (minimized)
         return;
 
-    // Output dimensions must be at least 1 in both x and y.
+    // Ensure the window size is not too small
     sutil::ensureMinimumSize(res_x, res_y);
-
     Params* params = static_cast<Params*>(glfwGetWindowUserPointer(window));
     params->image_width = res_x;
     params->image_height = res_y;
@@ -188,36 +172,39 @@ static void windowSizeCallback(GLFWwindow* window, int32_t res_x, int32_t res_y)
     resize_dirty = true;
 }
 
-
+// Handles minimizing and restoring the window
 static void windowIconifyCallback(GLFWwindow* window, int32_t iconified)
 {
     minimized = (iconified > 0);
 }
 
-
+// Handles key press events
 static void keyCallback(GLFWwindow* window, int32_t key, int32_t /*scancode*/, int32_t action, int32_t /*mods*/)
 {
     if (action == GLFW_PRESS)
     {
         if (key == GLFW_KEY_Q || key == GLFW_KEY_ESCAPE)
         {
+            // Quit
             glfwSetWindowShouldClose(window, true);
         }
+        else if (key == GLFW_KEY_G)
+        {
+            // Toggle depth of field
+            dof = !dof;
+            camera_changed = true;
+        }
     }
-    else if (key == GLFW_KEY_G)
-    {
-        dof = !dof;
-        camera_changed = true;
     }
-}
 
-
+// Handles mouse scroll events
 static void scrollCallback(GLFWwindow* window, double xscroll, double yscroll)
 {
     if (trackball.wheelEvent((int)yscroll))
         camera_changed = true;
 }
 
+// Checks if the camera has changed and updates the relevant parameters accordingly
 void handleCameraUpdate(Params& params)
 {
     if (!camera_changed)
@@ -229,6 +216,7 @@ void handleCameraUpdate(Params& params)
     camera.UVWFrame(params.U, params.V, params.W);
 }
 
+// Checks if the window has been resized and updates the output buffer accordingly
 void handleResize(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
 {
     if (!resize_dirty)
@@ -245,9 +233,9 @@ void handleResize(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params
     ));
 }
 
+// Resets the accumulation buffer when needed, ensures parameter consistency
 void updateState(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
 {
-    //printf("updateState_1: %d\n", camera_changed);
     // Update params on device
     if (camera_changed || resize_dirty)
         params.subframe_index = 0;
@@ -257,41 +245,13 @@ void updateState(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
 	
     handleCameraUpdate(params);
     handleResize(output_buffer, params);
-    //printf("updateState_2: %d\n", camera_changed);
 }
 
-
-// void launchSubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, PathTracerState& state)
-// {
-//     // Launch
-//     uchar4* result_buffer_data = output_buffer.map();
-//     state.params.frame_buffer = result_buffer_data;
-//     CUDA_CHECK(cudaMemcpyAsync(
-//         reinterpret_cast<void*>(state.d_params),
-//         &state.params, sizeof(Params),
-//         cudaMemcpyHostToDevice, state.stream
-//     ));
-// 
-//     OPTIX_CHECK(optixLaunch(
-//         state.pipeline,
-//         state.stream,
-//         reinterpret_cast<CUdeviceptr>(state.d_params),
-//         sizeof(Params),
-//         &state.sbt,
-//         state.params.width,   // launch width
-//         state.params.height,  // launch height
-//         1                     // launch depth
-//     ));
-//     output_buffer.unmap();
-//     CUDA_SYNC_CHECK();
-// }
-
-
+// TODO: comments for this function
 void displaySubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, sutil::GLDisplay& gl_display, GLFWwindow* window)
 {
-    // Display
-    int framebuf_res_x = 0;  // The display's resolution (could be HDPI res)
-    int framebuf_res_y = 0;  //
+    int framebuf_res_x = 0;
+    int framebuf_res_y = 0;
     glfwGetFramebufferSize(window, &framebuf_res_x, &framebuf_res_y);
     gl_display.display(
         output_buffer.width(),
@@ -301,28 +261,6 @@ void displaySubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, sutil::GLDi
         output_buffer.getPBO()
     );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 int main(int argc, char* argv[])
 {
@@ -450,8 +388,6 @@ int main(int argc, char* argv[])
 				    sphere.radius = 0.5f;
                     sphere.color = make_float3(rnd_f(), rnd_f(), rnd_f());
                     sphere.specular = sphere.color;
-
-                    //sphere.roughness = 0.05f;
 
                     // Check for overlapping spheres
                     for (int j = 0; j < spheres.size(); ++j) {
@@ -581,11 +517,11 @@ int main(int argc, char* argv[])
         //
         // Create OptiX module
         // 
-        // In OptiX, a module is a compilation unit of device programs (shaders). It's created from a single CUDA source file that contains
-        // one or more device programs (e.g., ray generation, miss, closest-hit, any-hit, and intersection shaders).
-        // The module compile options control the inlining and optimization levels during JIT (Just-In-Time) compilation,
-        // while pipeline compile options specify the overarching characteristics of the full pipeline, such as the number of payload
-        // and attribute values, or whether motion blur or specific primitive types are utilized.
+        // A module is a compilation unit of shaders. It's made from a CUDA source file that contains
+        // one or more shaders (e.g., ray generation, miss, closest-hit, any-hit, and intersection shaders).
+        // The compile options control the inlining and optimization levels during JIT compilation,
+        // while pipeline compile options control the characteristics of the whole pipeline, like the
+        // number of payload and attribute values, motion blur or primitive types etc.
         //
         OptixModule module = nullptr;
         OptixModule sphere_module = nullptr;
@@ -625,10 +561,10 @@ int main(int argc, char* argv[])
         //
         // Program group creation
         //
-        // The program group represents a collection of programs (shaders) that are bound together during pipeline execution.
-        // Different raytracing stages (ray generation, intersection, any-hit, closest-hit, miss, etc.) are logically grouped.
-        // These groups serve as the execution domains for the previously compiled device code (shaders).
-        // Each group is associated with specific shader types and fed with relevant module functions names. 
+        // The program group is a collection of shaders that are bound together during pipeline execution.
+        // Different raytracing stages (ray generation, intersection, any-hit, closest-hit, miss, etc.) are grouped.
+        // These groups serve as the execution domains for the previously compiled shaders.
+        // Each group is associated with specific shader types and gets the relevant module functions' names. 
         // 
         OptixProgramGroup raygen_prog_group = nullptr;
         OptixProgramGroup miss_prog_group = nullptr;
@@ -732,10 +668,10 @@ int main(int argc, char* argv[])
 
         //
         // Set up shader binding table (SBT)
-        //
-        // A Shader Binding Table (SBT) record is a data structure used by the OptiX engine to map
-        // the intersection of rays with scene geometry to the appropriate shaders that should be executed.
-        // The SBT record holds the function pointers and the data those shaders need.
+        // 
+        // A Shader Binding Table (SBT) record is a data structure in OptiX to map the
+        // intersection of rays and geometry, to the appropriate shaders that should be executed.
+        // SBT records hold the function pointers and the data those shaders need :
         //
         OptixShaderBindingTable sbt = {};
         {
@@ -828,14 +764,6 @@ int main(int argc, char* argv[])
         // Create an output buffer for rendering the final image
         sutil::CUDAOutputBuffer<uchar4> output_buffer(sutil::CUDAOutputBufferType::CUDA_DEVICE, width, height);
 		
-
-
-
-
-		
-
-
-
         std::string outfile;
         sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::GL_INTEROP;
         CUstream stream;
@@ -869,6 +797,7 @@ int main(int argc, char* argv[])
             cudaMemcpyHostToDevice
         ));
 
+        // Go through the command line arguments and adjust parameters if needed
         for (int i = 1; i < argc; ++i)
         {
             const std::string arg = argv[i];
@@ -924,6 +853,7 @@ int main(int argc, char* argv[])
             // Render loop
             //
             {
+                // TODO: annotate the render loop better
                 sutil::CUDAOutputBuffer<uchar4> output_buffer(
                     output_buffer_type,
                     params.image_width,
@@ -933,6 +863,7 @@ int main(int argc, char* argv[])
                 output_buffer.setStream(stream);
                 sutil::GLDisplay gl_display;
 
+                // Rendering statistics
                 std::chrono::duration<double> state_update_time(0.0);
                 std::chrono::duration<double> render_time(0.0);
                 std::chrono::duration<double> display_time(0.0);
@@ -947,8 +878,6 @@ int main(int argc, char* argv[])
                     state_update_time += t1 - t0;
                     t0 = t1;
 
-                    // launchSubframe(output_buffer, state);
-
                     // Launch
                     uchar4* result_buffer_data = output_buffer.map();
                     params.frame_buffer = result_buffer_data;
@@ -961,7 +890,7 @@ int main(int argc, char* argv[])
                     OPTIX_CHECK(optixLaunch(
                         pipeline,
                         stream,
-                        /*reinterpret_cast<CUdeviceptr>*/(d_param),
+                        (d_param),
                         sizeof(Params),
                         &sbt,
                         params.image_width,   // launch width
@@ -970,8 +899,6 @@ int main(int argc, char* argv[])
                     ));
                     output_buffer.unmap();
                     CUDA_SYNC_CHECK();
-                    // printf("endLoop: %d\n", camera_changed);
-
 
                     t1 = std::chrono::steady_clock::now();
                     render_time += t1 - t0;
@@ -994,7 +921,7 @@ int main(int argc, char* argv[])
             sutil::cleanupUI(window);
         }
         else
-        {
+        { // TODO: this branch is probably not needed, get rid of all the command line argument parsing
             if (output_buffer_type == sutil::CUDAOutputBufferType::GL_INTEROP)
             {
                 sutil::initGLFW();  // For GL context
@@ -1002,8 +929,6 @@ int main(int argc, char* argv[])
             }
 
             {
-                // this scope is for output_buffer, to ensure the destructor is called bfore glfwTerminate()
-
                 sutil::CUDAOutputBuffer<uchar4> output_buffer(
                     output_buffer_type,
                     params.image_width,
@@ -1011,34 +936,9 @@ int main(int argc, char* argv[])
                 );
 
                 handleCameraUpdate(params);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-				
                 handleResize(output_buffer, params);
-				
-                // launchSubframe(output_buffer, state);
 
-                    // Launch
+                // Launch
                 uchar4* result_buffer_data = output_buffer.map();
                 params.frame_buffer = result_buffer_data;
                 CUDA_CHECK(cudaMemcpyAsync(
@@ -1050,7 +950,7 @@ int main(int argc, char* argv[])
                 OPTIX_CHECK(optixLaunch(
                     pipeline,
                     stream,
-                    /*reinterpret_cast<CUdeviceptr>*/(d_param),
+                    (d_param),
                     sizeof(Params),
                     &sbt,
                     params.image_width,   // launch width
@@ -1059,19 +959,6 @@ int main(int argc, char* argv[])
                 ));
                 output_buffer.unmap();
                 CUDA_SYNC_CHECK();
-
-
-
-
-
-
-
-
-
-
-
-
-
 
                 sutil::ImageBuffer buffer;
                 buffer.data = output_buffer.getHostPointer();
@@ -1087,91 +974,6 @@ int main(int argc, char* argv[])
                 glfwTerminate();
             }
         }
-
-
-
-
-
-
-
-
-
-
-
-
-
-		
-        /*
-        //
-        // Launch OptiX ray tracing pipeline
-        //
-        {
-            CUstream stream;
-            CUDA_CHECK(cudaStreamCreate(&stream));
-
-            // Set up launch parameters
-            Params params;
-            params.image = output_buffer.map();
-            params.image_width = width;
-            params.image_height = height;
-            params.origin_x = width / 2;
-            params.origin_y = height / 2;
-            params.handle = gas_handle;
-
-            // Allocate device memory for the Params structure and copy from host to device
-            CUdeviceptr d_param;
-            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_param), sizeof(Params)));
-            CUDA_CHECK(cudaMemcpy(
-                reinterpret_cast<void*>(d_param),
-                &params, sizeof(params),
-                cudaMemcpyHostToDevice
-            ));
-
-            // Launch the pipeline
-            OPTIX_CHECK(optixLaunch(pipeline, stream, d_param, sizeof(Params), &sbt, width, height, 1));
-            CUDA_SYNC_CHECK();
-
-            // Unmap the output buffer after the launch has finished
-            output_buffer.unmap();
-            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_param)));
-        }
-
-        //
-        // Display results
-        //
-        {
-            sutil::ImageBuffer buffer;
-            buffer.data = output_buffer.getHostPointer(); // Get pointer to host data of the output buffer
-            buffer.width = width;
-            buffer.height = height;
-            buffer.pixel_format = sutil::BufferImageFormat::UNSIGNED_BYTE4;
-
-            // If no output file was specified, display the image in a pop-up window
-            if (outfile.empty())
-                sutil::displayBufferWindow(argv[0], buffer);
-            else
-                sutil::saveImage(outfile.c_str(), buffer, false); // Otherwise, save the image to disk as specified by the user
-        }
-        */
-			
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-			
-			
 
         //
         // Cleanup

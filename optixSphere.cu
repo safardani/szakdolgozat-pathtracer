@@ -61,7 +61,7 @@ static __forceinline__ __device__ void traceRadiance(
     float3                 ray_direction,   // The direction of the ray
     float                  tmin,            // The minimum distance along the ray to check for intersections
     float                  tmax,            // The maximum distance along the ray to check for intersections
-    Payload* prd                             // The payload registered with the ray
+    Payload* prd                            // The payload registered with the ray
 )
 {
     // Convert the payload data to 32-bit float values that can be used in the optixTrace call
@@ -586,7 +586,6 @@ extern "C" __global__ void __closesthit__radiance()
     }
 
     // Calculate the radiance of the sunlight sample
-    //p.radiance += /*sunlight_emission * weight + */hit_group_data->emission_color;
     p.radiance += sunlight_emission * weight + hit_group_data->emission_color;
     p.done = false;
 
