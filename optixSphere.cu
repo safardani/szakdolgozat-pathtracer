@@ -553,7 +553,7 @@ extern "C" __global__ void __closesthit__radiance()
     const float r = sqrt(rnd(seed));  // Uniformly distributed radius
     const float theta = 2.0f * M_PI * rnd(seed);  // Uniformly distributed angle
 
-    // Unit disk x, y coordinates
+    // Unit disks x, y coordinates
     const float x = sqrt(r) * cosf(theta);
     const float y = sqrt(r) * sinf(theta);
 
