@@ -47,6 +47,8 @@ struct Payload {
     float3 direction;       // Direction of the ray
     int done;
     int depth;              // Depth of the ray
+
+    int alt_seed;           // Second seed for the random number generator
 };
 
 // The RayGenData structure is populated with data used by the ray generation program.

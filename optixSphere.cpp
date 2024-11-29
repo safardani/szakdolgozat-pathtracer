@@ -71,8 +71,8 @@ int32_t mouse_button = -1;
 // Configure the camera for the scene. Sets the eye position, look-at point, up direction, etc.
 void configureCamera(sutil::Camera& cam, const uint32_t width, const uint32_t height)
 {
-    camera.setEye({ 0.0f, 2.0f, -10.0f });
-    camera.setLookat({ 0.0f, 0.0f, 0.0f });
+    camera.setEye({ 2.0f, 3.0f, 11.0f });
+    camera.setLookat({ 0.0f, 0.0f, 4.0f });
     camera.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f )));
     camera.setFovY(90.0f);
     camera_changed = true;
@@ -318,6 +318,7 @@ int main(int argc, char* argv[])
             OPTIX_CHECK(optixDeviceContextCreate(cuCtx, &options, &context)); // Create the OptiX device context
         }
 
+		bool consistent_generation = true; // Flag to check if the spheres are consistently generated (debug and comparison purposes)
         //
         // Building an acceleration structure to represent the geometry in the scene (Acceleration Handling)
         //
@@ -331,7 +332,7 @@ int main(int argc, char* argv[])
             accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
             // Set the number of spheres to generate
-            #define NUM_SPHERES 40
+            #define NUM_SPHERES 16
 
             // Generate random spheres, each with a random position, but on the same horizontal plane
             for (int i = 0; i < NUM_SPHERES; ++i) {
@@ -347,7 +348,7 @@ int main(int argc, char* argv[])
                     sphere.metallic = false;
                     sphere.transparent = false;
                     sphere.emission = 0.0f;
-				} else {
+				} else if (!consistent_generation) {
                     float type_gen = rnd_f();
                     sphere.emission = 0.0f;
 
@@ -399,7 +400,36 @@ int main(int argc, char* argv[])
                             overlap = true;
 						}
 					}
-				}
+                } else {
+					// Have a row of metallic, non-metallic, and transparent spheres
+					// Each row should have 5 spheres lined up with increasing roughness (0, 0.25, 0.5, 0.75, 1.0)
+
+					int row = (i - 1) / 3; // dictates the roughness of the sphere
+					int col = (i - 1) % 3; // dictates if the sphere is metallic, transparent, or neither
+                    
+					sphere.center = make_float3(2.0f * (col - 2), 0.0f, 2.0f * row);
+					sphere.radius = 0.5f;
+					sphere.color = make_float3(0.35f, 0.55f, 0.4f);
+					sphere.specular = sphere.color;
+					sphere.emission = 0.0f;
+                    
+					if (col == 0) {
+						sphere.metallic = false;
+						sphere.transparent = false;
+                        sphere.roughness = 0.25f * row;
+					}
+					else if (col == 1) {
+						sphere.metallic = true;
+						sphere.transparent = false;
+						sphere.roughness = 0.25f * row;
+					}
+					else {
+						sphere.metallic = false;
+						sphere.transparent = true;
+						sphere.roughness = 0.25f * row;
+					}
+                }
+
                 if (!overlap)
 				    spheres.push_back(sphere);
 			}
@@ -537,7 +567,7 @@ int main(int argc, char* argv[])
             // Specify pipeline compile options that are constant for all the modules in the pipeline.
             pipeline_compile_options.usesMotionBlur = false;
             pipeline_compile_options.traversableGraphFlags = OPTIX_TRAVERSABLE_GRAPH_FLAG_ALLOW_SINGLE_GAS;
-            pipeline_compile_options.numPayloadValues = 18;
+            pipeline_compile_options.numPayloadValues = 19;
             pipeline_compile_options.numAttributeValues = 1;
             pipeline_compile_options.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
             pipeline_compile_options.pipelineLaunchParamsVariableName = "params";
