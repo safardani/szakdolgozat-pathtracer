@@ -318,7 +318,7 @@ int main(int argc, char* argv[])
             OPTIX_CHECK(optixDeviceContextCreate(cuCtx, &options, &context)); // Create the OptiX device context
         }
 
-		bool consistent_generation = true; // Flag to check if the spheres are consistently generated (debug and comparison purposes)
+		bool consistent_generation = false; // Flag to check if the spheres are consistently generated (debug and comparison purposes)
         //
         // Building an acceleration structure to represent the geometry in the scene (Acceleration Handling)
         //
@@ -332,7 +332,7 @@ int main(int argc, char* argv[])
             accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
             // Set the number of spheres to generate
-            #define NUM_SPHERES 16
+            #define NUM_SPHERES 40
 
             // Generate random spheres, each with a random position, but on the same horizontal plane
             for (int i = 0; i < NUM_SPHERES; ++i) {

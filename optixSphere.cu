@@ -519,7 +519,7 @@ extern "C" __global__ void __miss__radiance()
 
     // Set the ray's payload to the miss color (in this case black)
     if (length(ray_dir - sunlight_direction) < 0.1f) {
-        prd.radiance += prd.attenuation * make_float3(700.0f);
+        prd.radiance += prd.attenuation * make_float3(7.0f);
 		//printf("IF   - radiance: %f %f %f, attenuation: %f %f %f\n", prd.radiance.x, prd.radiance.y, prd.radiance.z, prd.attenuation.x, prd.attenuation.y, prd.attenuation.z);
 		//prd.radiance += make_float3(15.0f); // TODO account for sample count
     } else {
@@ -576,6 +576,16 @@ extern "C" __global__ void __closesthit__radiance()
         payload.emitted = emission_color; // TODO why are we doing this
     else
         payload.emitted = make_float3(0.0f);
+
+
+    if (length(emission_color) > 0.0001f)
+    {
+		payload.radiance += payload.attenuation * emission_color;
+		payload.done = true;
+		setPayloadCH(payload);
+		return;
+	}
+
 
 	random_in_unit_sphere(seed); // we need this FOR SOME REASON??? to keep the seed random and avoid artifacts. TODO
 
