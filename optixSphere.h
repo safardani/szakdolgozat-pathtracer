@@ -48,7 +48,7 @@ struct Payload {
     int done;
     int depth;              // Depth of the ray
 
-    int alt_seed;           // Second seed for the random number generator
+	bool specular_bounce;   // Whether the ray is a specular bounce or not
 };
 
 // The RayGenData structure is populated with data used by the ray generation program.

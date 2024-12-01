@@ -70,13 +70,27 @@ static __forceinline__ __device__ void traceRadiance(
 )
 {
     // Convert the payload data to 32-bit float values that can be used in the optixTrace call
-    unsigned int u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17;
+	unsigned int u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17, u18;
 
     u0 = __float_as_uint(prd->attenuation.x);
     u1 = __float_as_uint(prd->attenuation.y);
     u2 = __float_as_uint(prd->attenuation.z);
     u3 = prd->seed;
+	u4 = __float_as_uint(prd->emitted.x);
+	u5 = __float_as_uint(prd->emitted.y);
+	u6 = __float_as_uint(prd->emitted.z);
+	u7 = __float_as_uint(prd->radiance.x);
+	u8 = __float_as_uint(prd->radiance.y);
+	u9 = __float_as_uint(prd->radiance.z);
+	u10 = __float_as_uint(prd->origin.x);
+	u11 = __float_as_uint(prd->origin.y);
+	u12 = __float_as_uint(prd->origin.z);
+	u13 = __float_as_uint(prd->direction.x);
+	u14 = __float_as_uint(prd->direction.y);
+	u15 = __float_as_uint(prd->direction.z);
+	u16 = prd->done;
     u17 = prd->depth;
+	u18 = prd->specular_bounce;
 
     // Perform the trace call which will call into the intersect, any-hit and closest-hit programs
     optixTraverse(
@@ -92,13 +106,13 @@ static __forceinline__ __device__ void traceRadiance(
         0,                        // SBT offset
         1,           // SBT stride
         0,                        // missSBTIndex
-        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17, u18);
     optixReorder(
         // Application specific coherence hints could be passed in here
     );
 
     optixInvoke(PAYLOAD_TYPE_RADIANCE,
-        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17);
+        u0, u1, u2, u3, u4, u5, u6, u7, u8, u9, u10, u11, u12, u13, u14, u15, u16, u17, u18);
 
     prd->attenuation = make_float3(__uint_as_float(u0), __uint_as_float(u1), __uint_as_float(u2));
     prd->seed = u3;
@@ -109,6 +123,7 @@ static __forceinline__ __device__ void traceRadiance(
     prd->direction = make_float3(__uint_as_float(u13), __uint_as_float(u14), __uint_as_float(u15));
     prd->done = u16;
     prd->depth = u17;
+	prd->specular_bounce = u18;
 }
 
 
@@ -148,7 +163,7 @@ static __forceinline__ __device__ Payload getPayloadCH()
     p.attenuation.z = __uint_as_float(optixGetPayload_2());
     p.seed = optixGetPayload_3();
     p.depth = optixGetPayload_17();
-	p.alt_seed = optixGetPayload_18();
+	p.specular_bounce = optixGetPayload_18();
 
     return p;
 }
@@ -158,9 +173,15 @@ static __forceinline__ __device__ Payload getPayloadMiss()
 {
     Payload p = {};
 	
-    // p.radiance.x = __uint_as_float(optixGetPayload_7());
-    // p.radiance.y = __uint_as_float(optixGetPayload_8());
-    // p.radiance.z = __uint_as_float(optixGetPayload_9());
+    p.radiance.x = __uint_as_float(optixGetPayload_7());
+    p.radiance.y = __uint_as_float(optixGetPayload_8());
+    p.radiance.z = __uint_as_float(optixGetPayload_9());
+
+	p.attenuation.x = __uint_as_float(optixGetPayload_0());
+	p.attenuation.y = __uint_as_float(optixGetPayload_1());
+	p.attenuation.z = __uint_as_float(optixGetPayload_2());
+
+	p.depth = optixGetPayload_17();
 
     return p;
 }
@@ -193,14 +214,17 @@ static __forceinline__ __device__ void setPayloadCH(Payload p)
     
     optixSetPayload_16(p.done);
     optixSetPayload_17(p.depth);
-
-	optixSetPayload_18(p.alt_seed);
+	optixSetPayload_18(p.specular_bounce);
 }
 
 
 // A helper function to set the payload for the current ray
 static __forceinline__ __device__ void setPayloadMiss(Payload p)
 {
+	optixSetPayload_0(__float_as_uint(p.attenuation.x));
+	optixSetPayload_1(__float_as_uint(p.attenuation.y));
+	optixSetPayload_2(__float_as_uint(p.attenuation.z));
+
     optixSetPayload_4(__float_as_uint(p.emitted.x));
     optixSetPayload_5(__float_as_uint(p.emitted.y));
     optixSetPayload_6(__float_as_uint(p.emitted.z));
@@ -210,6 +234,7 @@ static __forceinline__ __device__ void setPayloadMiss(Payload p)
     optixSetPayload_9(__float_as_uint(p.radiance.z));
     
     optixSetPayload_16(p.done);
+	optixSetPayload_17(p.depth);
 }
 
 // A helper function to generate a random 3D vector that is distributed as a cosine-weighted hemisphere around the z-axis
@@ -219,10 +244,10 @@ static __forceinline__ __device__ void cosine_sample_hemisphere(const float u1, 
     const float r = sqrtf(u1);
     const float phi = 2.0f * M_PIf * u2;
     p.x = r * cosf(phi);
-    p.y = r * sinf(phi);
+    p.z = r * sinf(phi);
 
     // Project up to hemisphere.
-    p.z = sqrtf(fmaxf(0.0f, 1.0f - p.x * p.x - p.y * p.y));
+    p.y = sqrtf(fmaxf(0.0f, 1.0f - p.x * p.x - p.z * p.z));
 }
 
 // A helper function to generate a random 3D vector that is inside the unit sphere (i.e. length < 1.0f)
@@ -284,13 +309,9 @@ extern "C" __global__ void __raygen__rg()
     const uint3 idx = optixGetLaunchIndex();
     const uint3 dim = optixGetLaunchDimensions();
 
-    // unsigned int seed = tea<4>(idx.y * params.image_width + idx.x, subframe_index);
-	// unsigned int alt_seed = seed ^ 0xAAAAAAAA;
-
     // TODO clean up
     unsigned int unique_key = idx.y * params.image_width + idx.x + subframe_index * params.image_width * params.image_height;
     unsigned int seed = unique_key; //hash(unique_key);
-    unsigned int alt_seed = unique_key + 1; //hash(unique_key + 1);
 
     // Set an initial color payload for the ray which might be modified by the closest-hit or miss program
     float3       payload_rgb = make_float3(0.0f);
@@ -322,12 +343,17 @@ extern "C" __global__ void __raygen__rg()
 			direction = normalize(d.x * U + d.y * V + W);
         }
 
+		float3 path_rgb = make_float3(0.0f);
+
         // Reset the payload data for this ray (every iteration of the loop)
         Payload payload;
         payload.attenuation = make_float3(1.0f);
-        payload.seed = seed;
-		payload.alt_seed = alt_seed;
+        payload.radiance = make_float3(0.0f);
+        payload.emitted = make_float3(0.0f);
+		payload.specular_bounce = false;
 
+        payload.seed = seed;
+		payload.done = false;
 		payload.depth = 20; // max_depth;
         // Trace the ray into the scene
         for (;;)
@@ -340,23 +366,32 @@ extern "C" __global__ void __raygen__rg()
                 1e16f,  // tmax
                 &payload);
 
-            // Accumulate the ray's contribution to the pixel color
-            payload_rgb += payload.emitted;
-            payload_rgb += payload.radiance * payload.attenuation;
+            // get the colors from the payload
+			// Accumulate the ray's contribution to the pixel color TODO rework the way this is accumulated
+
+            //payload_rgb += payload.emitted;
+            path_rgb = payload.radiance;
+
 
             // Russian roulette: try to keep path weights equal to one by randomly terminating paths.
-            const float p = dot(payload.attenuation, make_float3(0.30f, 0.59f, 0.11f));
+			//*
+			//const float p = dot(payload.attenuation, make_float3(0.30f, 0.59f, 0.11f)); // TODO which of these is correct
+            const float p = fmaxf(payload.attenuation.x, fmaxf(payload.attenuation.y, payload.attenuation.z));
             const bool done = payload.done || myrnd(seed) > p;
-            if (done)
+            if (done && p > 0.0f) {
+                path_rgb /= p; // TODO where does this go
                 break;
-            payload.attenuation /= p;
+            }
+            //*/
+			//if (payload.done) break;
 
             // Update ray origin and direction for the next path segment
             origin = payload.origin;
             direction = payload.direction;
 
-            --payload.depth;
+            payload.depth--;
         }
+        payload_rgb += path_rgb;
     }
 
     const unsigned int image_index = idx.y * params.image_width + idx.x;
@@ -393,41 +428,78 @@ extern "C" __global__ void __raygen__rg()
 }
 
 // GGX Normal Distribution Function (NDF)
-static __forceinline__ __device__ float D_GGX(float3 n, float3 h, float roughness)
+static __forceinline__ __device__ float D_GGX(float3 n, float3 h, float a)
 {
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = fmaxf(dot(n, h), 0.0f);
-    float NdotH2 = NdotH * NdotH;
+    if (a <= 0.02) {
+        if (dot(n, h) >= 0.999) {
+            return 1;
+        } else {
+            return 0;
+        }
+    } else {
+        float a2 = a * a;
+        float NdotH = fmaxf(dot(n, h), 0.0000001f);
+        float NdotH2 = NdotH * NdotH;
 
-    float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
-    denom = M_PIf * denom * denom;
+        float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
+        denom = M_PIf * denom * denom;
 
-    return a2 / denom;
+	    if (denom < 0.0000001f)
+		    return 1.0f;
+        return a2 / denom;
+    }
+
+}
+
+// Geometry Function (G) using Schlick-GGX
+static __forceinline__ __device__ float GGX_PartialGeometryTerm(float3 v, float3 n, float3 h, float alpha)
+{
+    float VoH2 = clamp(dot(v, h), 0.0f, 1.0f);
+    float chi = VoH2 / clamp(dot(v, n), 0.0f, 1.0f) > 0.0f ? 1.0f : 0.0f;
+    VoH2 = VoH2 * VoH2;
+    float tan2 = (1.0f - VoH2) / VoH2;
+
+    return (chi * 2.0f) / (1.0f + sqrt(1.0f + alpha * alpha * tan2));
 }
 
 // Geometry Function (G) using Schlick-GGX
 static __forceinline__ __device__ float G_SchlickGGX(float alpha, float3 n, float3 x)
 {
-	float numerator = fmaxf(dot(n, x), 0.0f);
+	float numerator = fabsf(dot(n, x));
 
 	float k = alpha / 2.0f;
-	float denominator = fmaxf(dot(n, x), 0.0f) * (1.0f - k) + k;
+	float denominator = fabsf(dot(n, x)) * (1.0f - k) + k;
 	denominator = fmaxf(denominator, 0.000001f);
 
 	return numerator / denominator;
 }
 
-static __forceinline__ __device__ float G_Smith(float alpha, float3 N, float3 V, float3 L)
+static __forceinline__ __device__ float G_Smith(float alpha, float3 N, float3 V, float3 L, float3 H)
 {
-	return G_SchlickGGX(alpha, N, V) * G_SchlickGGX(alpha, N, L);
+    return G_SchlickGGX(alpha, N, V) * G_SchlickGGX(alpha, N, L);
 }
 
 // Fresnel-Schlick approximation
-static __forceinline__ __device__ float3 Fresnel_Schlick(float cosTheta, float3 F0)
+static __forceinline__ __device__ float3 Fresnel_Schlick(float cosTheta, float3 F0, float3 spec)
 {
     cosTheta = clamp(cosTheta, 0.0f, 1.0f); // Ensure valid range
-    return F0 + (make_float3(1.0f) - F0) * powf(1.0f - cosTheta, 5.0f);
+    return F0 + (spec - F0) * powf(1.0f - cosTheta, 5.0f);
+}
+
+// Fresnel-Schlick approximation
+static __forceinline__ __device__ float Fresnel_Schlick_float(float cosine, float refraction_index) {
+    // Use Schlick's approximation for reflectance.
+    float r0 = (1.0f - refraction_index) / (1.0f + refraction_index);
+    r0 = r0 * r0;
+    return r0 + (1 - r0) * powf((1.0f - cosine), 5.0f);
+}
+
+static __forceinline__ __device__ float3 GGX_importance_sample(float r1, float r2, float alpha) {
+    float phi = 2.0f * M_PIf * r1;
+    float cosTheta = sqrt((1.0f - r2) / (1.0f + (alpha * alpha - 1.0f) * r2));
+    float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
+
+    return normalize(make_float3(sinTheta * cosf(phi), cosTheta, sinTheta * sinf(phi)));
 }
 
 // The miss program. This is called for any ray that does not hit geometry.
@@ -439,14 +511,22 @@ extern "C" __global__ void __miss__radiance()
     MissData* rt_data = reinterpret_cast<MissData*>(optixGetSbtDataPointer());
     Payload prd = getPayloadMiss();
 
+	//if (prd.depth == 20)
+    //    printf("INIT - radiance: %f %f %f, attenuation: %f %f %f\n", prd.radiance.x, prd.radiance.y, prd.radiance.z, prd.attenuation.x, prd.attenuation.y, prd.attenuation.z);
+
     float3 ray_dir = optixGetWorldRayDirection();
-    float3 sunlight_direction = normalize(make_float3(0.9f, 1.0f, 3.0f));
+    float3 sunlight_direction = normalize(make_float3(0.0f, 1.0f, 2.0f));
 
     // Set the ray's payload to the miss color (in this case black)
-    if (length(ray_dir - sunlight_direction) < 0.1f)
-		prd.radiance += make_float3(15.0f);
-	else
-		prd.radiance += make_float3(rt_data->r, rt_data->g, rt_data->b);
+    if (length(ray_dir - sunlight_direction) < 0.1f) {
+        prd.radiance += prd.attenuation * make_float3(700.0f);
+		//printf("IF   - radiance: %f %f %f, attenuation: %f %f %f\n", prd.radiance.x, prd.radiance.y, prd.radiance.z, prd.attenuation.x, prd.attenuation.y, prd.attenuation.z);
+		//prd.radiance += make_float3(15.0f); // TODO account for sample count
+    } else {
+        prd.radiance += prd.attenuation * make_float3(rt_data->r, rt_data->g, rt_data->b);
+        //printf("ELSE - radiance: %f %f %f, attenuation: %f %f %f\n", prd.radiance.x, prd.radiance.y, prd.radiance.z, prd.attenuation.x, prd.attenuation.y, prd.attenuation.z);
+		//prd.radiance += make_float3(rt_data->r, rt_data->g, rt_data->b);
+    }
 
     prd.emitted = make_float3(0.f);
     prd.done = true;
@@ -461,7 +541,8 @@ extern "C" __global__ void __closesthit__radiance()
     HitGroupData* hit_group_data = reinterpret_cast<HitGroupData*>(optixGetSbtDataPointer());
 
     const unsigned int  sphere_idx = optixGetPrimitiveIndex();
-	const float3        ray_dir = optixGetWorldRayDirection(); // direction that the ray is heading in, from the origin
+	const float3        ray_dir = optixGetWorldRayDirection(); // TODO what the hell is up with normalization // direction that the ray is heading in, from the origin
+	//float3 ray_dir_original = optixGetWorldRayDirection();
     const float3        ray_orig = optixGetWorldRayOrigin();
 	float               t_hit = optixGetRayTmax(); // distance to the hit point
 
@@ -486,7 +567,7 @@ extern "C" __global__ void __closesthit__radiance()
 	float3 diffuse_albedo = hit_group_data->diffuse_color;
 	float3 emission_color = hit_group_data->emission_color;
 
-	float roughness = hit_group_data->roughness; roughness *= roughness;
+	float roughness = hit_group_data->roughness; //roughness *= roughness;
 	float metallicity = hit_group_data->metallic ? 1.0f : 0.0f;
 	float transparency = hit_group_data->transparent ? 1.0f : 0.0f;
 	float ior = 1.5f;
@@ -498,54 +579,190 @@ extern "C" __global__ void __closesthit__radiance()
 
 	random_in_unit_sphere(seed); // we need this FOR SOME REASON??? to keep the seed random and avoid artifacts. TODO
 
+    if (roughness < 0.015f) roughness = 0.015f; // Prevent artifacts from division by very small numbers
+	if (roughness > 0.999f) roughness = 0.999f; // Clamp roughness to 1.0
+
+
+
+
+
+    if (payload.depth <= 0) payload.done = true;
+
+
+
+
+    
+    
+
+
+
+
+
+
+
+
+
+
 	// GGX importance sampling code
     float r1 = myrnd(seed);
     float r2 = myrnd(seed);
-    if (roughness < 0.015f) roughness = 0.015f; // Prevent artifacts from division by very small numbers
-
+    /*
     float phi = 2.0f * M_PIf * r1;
 	float alpha = roughness * roughness;
     float cosTheta = sqrt((1.0f - r2) / (1.0f + (alpha * alpha - 1.0f) * r2));
     float sinTheta = sqrt(1.0f - cosTheta * cosTheta);
 
-    float3 half_vec = normalize(make_float3(sinTheta * cosf(phi), cosTheta, sinTheta * sinf(phi)));
+    */
+    float alpha = roughness * roughness;
+	float3 half_vec = GGX_importance_sample(r1, r2, alpha);
 
 	// transform half vector from tangent space to world space
     Onb onb(normal);
     onb.inverse_transform(half_vec);
+	normalize(half_vec);
 
     float3 light_dir = reflect(ray_dir, half_vec);
-    
-	float3 F0 = make_float3(fabs((1.0 - ior) / (1.0 + ior))); // 0.04 for dielectrics
+    float3 light_dir_diffuse;
+	r1 = myrnd(seed);
+	r2 = myrnd(seed);
+    cosine_sample_hemisphere(r1, r2, light_dir_diffuse);
+	onb.inverse_transform(light_dir_diffuse);
+
+    /* FOR TESTING
+	light_dir = normalize(make_float3(0, 1, 2));
+	half_vec = normalize(light_dir - ray_dir);
+    //*/
+
+    float3 F0 = make_float3(fabs((1.0 - ior) / (1.0 + ior))); // 0.04 for dielectrics
     F0 = F0 * F0;
     F0 = lerp(F0, specular_albedo, metallicity);
-
-	float3 F = Fresnel_Schlick(fmaxf(dot(half_vec, -ray_dir), 0.0f), F0);
-	float D = D_GGX(normal, half_vec, roughness); // normal distribution function for brdf
-	float G = G_Smith(alpha, normal, -ray_dir, light_dir); // geometry function for brdf
+    
+    float3 F = Fresnel_Schlick(fmaxf(dot(normal, -ray_dir), 0.0f), F0, specular_albedo);
+	float D = D_GGX(normal, half_vec, alpha); // normal distribution function for brdf
+	float G = G_Smith(alpha, normal, -ray_dir, light_dir_diffuse, normalize(light_dir_diffuse - ray_dir)); // geometry function for brdf 
+	// TODO DOUBLE CHECK where we are using alpha and roughness correctly or incorrectly
 
     // combined specular brdf
-	float3 BRDF_specular = (D * F * G) / (4.0f * fmaxf(dot(normal, -ray_dir), 0.0f) * fmaxf(dot(normal, light_dir), 0.0f));
+	float3 brdf_specular = F * D * G / (4.0f * fabsf(dot(normal, -ray_dir)) * fabsf(dot(normal, light_dir)));
+
+    float NdotH = fmaxf(dot(normal, half_vec), 0.0f);
+    float VdotH = fabsf(dot(-ray_dir, half_vec));
+    VdotH = fmaxf(dot(-ray_dir, half_vec), 0.001f);
+	float NdotV = fmaxf(dot(normal, - ray_dir), 0.0f);
+    float IdotN;
+
+
+    IdotN = fabsf(dot(normal, normalize(light_dir_diffuse)));
+	float F_blend_factor = Fresnel_Schlick_float(NdotV, ior);
+
+    // calculating the type of the next bounce
+    float specular_probability = metallicity + (1.0f - metallicity) * F_blend_factor;
+    if (myrnd(seed) < specular_probability)
+    {
+        payload.direction = normalize(light_dir);
+        payload.specular_bounce = true;
+    }
+    else {
+
+        payload.direction = normalize(light_dir_diffuse);
+        payload.specular_bounce = false;
+    }
+
+    //printf("%f\n", VdotH);
+    float spdf = (D * NdotH) / (4.0f * VdotH); //* (1.0f + 2.0f * alpha); // TODO very hacky method lol
+    float dpdf = IdotN / M_PIf;
+
+    float pdf = specular_probability * spdf + (1.0 - specular_probability) * dpdf;
+	float3 brdf = brdf_specular + (1.0f - metallicity) * diffuse_albedo / M_PIf;
 
 
 
 
-	// solely diffuse lighting for now
-    float3 light_dir_diffuse;
-	cosine_sample_hemisphere(myrnd(seed), myrnd(seed), light_dir_diffuse);
-	payload.direction = light_dir_diffuse;
 
 
 
 
 
 
-	if (payload.depth <= 0) payload.done = true;
+    // Determine if the material is transparent (glass)
+    if (transparency > 0.5f)
+    {
+        // Glass material handling
+        float cos_theta_i = dot(normal, -ray_dir);
+		//float cos_theta_i_original = dot(normal, -ray_dir_original); // TEST
+        float eta = ior; // Index of refraction of air
+        
+        float3 N = normal;
+        
+        // Check if the ray is inside the material
+        if (cos_theta_i < 0.0f)
+        {
+            // Ray is inside the glass
+            cos_theta_i = -cos_theta_i;
+            N = -normal;
+            // Swap eta_i and eta_t
+            eta = 1.0f / eta;
+        }
+        
+		// check for critical angle
+        float sin_theta_t2 = eta * eta * (1.0f - cos_theta_i * cos_theta_i);
+    
+		// schlick's approximation
+        float3 reflect_dir;
+		//float3 reflect_dir_original; // TEST
+        float3 refract_dir;
+		//float3 refract_dir_original; // TEST
+        float reflectance = Fresnel_Schlick_float(cos_theta_i, ior);
+		if (myrnd(seed) < reflectance)
+        {
+			float3 half_vec = GGX_importance_sample(r1, r2, alpha);
+            Onb onb(normal);
+            onb.inverse_transform(half_vec);
+            normalize(half_vec);
+
+            reflect_dir = reflect(ray_dir, half_vec);
+			//reflect_dir_original = reflect(ray_dir_original, half_vec); // TEST
+			normalize(reflect_dir);
+            payload.direction = reflect_dir;
+		}
+		else
+		{
+			// refract the ray
+		    float alpha = roughness * roughness;
+			refract(refract_dir, ray_dir, N, eta);
+			//refract(refract_dir_original, ray_dir_original, N, eta); // TEST
+			normalize(refract_dir);
+			payload.direction = refract_dir + 0.8f * alpha * random_in_unit_sphere(seed);
+		}
+
+        //print all the test variables
+		//printf("ray_dir_normalize: \t%f\t%f\t%f\nray_dir_original:  \t%f\t%f\t%f\n\n", ray_dir.x, ray_dir.y, ray_dir.z, ray_dir_original.x, ray_dir_original.y, ray_dir_original.z);
+
+
+        payload.origin = hit_pos;
+        payload.seed = seed; // update the seed to keeprandomness
+        setPayloadCH(payload);
+		return;
+    }
+
+
+
+
+
+
+
+
+
+    //payload.radiance += payload.attenuation * (brdf * IdotN / pdf); // TODO needed when doing NEE
+    if (pdf >= 0.00001f)
+        payload.attenuation *= (brdf * IdotN) / pdf;
+    //else
+	//	printf("pow: %f, NdotV: %f, NdotH: %f, VdotH: %f, D: %f, alpha: %f, specular probability: %f, spdf: %f, dpdf: %f, pdf: %f, metallicity: %f, F_blend_factor: %f\n", powf((1.0f - NdotV), 5.0f), NdotV, NdotH, VdotH, D, alpha, specular_probability, spdf, dpdf, pdf, metallicity, F_blend_factor);
+    
+    
 
     payload.origin = hit_pos;
-	payload.attenuation *= diffuse_albedo; // accumulates how much the material absorbs light on the given path
-
     payload.seed = seed; // update the seed to keeprandomness
-
+    
     setPayloadCH(payload);
 }

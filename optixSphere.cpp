@@ -271,8 +271,8 @@ int main(int argc, char* argv[])
     int         width = 1600;
     int         height = 1200;
 #else
-    int         width = 160;
-    int         height = 120;
+    int         width = 600;
+    int         height = 400;
 #endif
 
     // Parse command-line arguments to adjust the output file and image dimensions if needed
@@ -929,6 +929,7 @@ int main(int argc, char* argv[])
                     ));
                     output_buffer.unmap();
                     CUDA_SYNC_CHECK();
+                    // iterate through the pixels
 
                     t1 = std::chrono::steady_clock::now();
                     render_time += t1 - t0;
