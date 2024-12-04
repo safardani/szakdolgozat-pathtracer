@@ -32,7 +32,7 @@
 // Window handling
 #include <GLFW/glfw3.h>
 #include <sutil/GLDisplay.h>
-
+#include <fstream>
 
 /**
     A Shader Binding Table (SBT) record is a data structure in OptiX to map the
@@ -60,6 +60,34 @@ typedef SbtRecord<HitGroupData> HitGroupSbtRecord;
 
 bool resize_dirty = false;
 bool minimized = false;
+
+bool fileExists(const std::string& filename) {
+    std::ifstream f(filename.c_str());
+    return f.good();
+}
+
+struct Material // TODO move to .h
+{
+    float3 color;
+    float3 specular;   // Specular reflectance of the material.
+
+    float emission;
+    float roughness;  // Roughness value of the material.
+    bool metallic;     // Whether the material is metallic or not.
+    bool transparent;  // Whether the material is transparent or not.
+
+    bool   has_texture;       // True if this material uses a texture
+    sutil::ImageBuffer albedo_image; // Texture object for albedo // TODO fix this?
+
+    bool   has_roughness_map;
+    sutil::ImageBuffer roughness_image;
+
+    bool   has_normal_map;
+    sutil::ImageBuffer normal_image;
+
+    bool   has_metallic_map;
+    sutil::ImageBuffer metallic_image;
+};
 
 // Camera state
 bool dof = true;
@@ -324,7 +352,50 @@ void generateSphereMesh(const float3& center, float radius, int stacks, int slic
     }
 }
 
+void setUpImageTexture(bool &has_map, sutil::ImageBuffer &image, std::string filename, CUdeviceptr& gpu_buffer) {
+    if (fileExists(filename))
+    {
+        has_map = true;
+        image = sutil::loadImage(filename.c_str());
+        // Convert to float4 if needed, just like albedo
+		std::cout << "Loaded texture " << filename << std::endl;
+    } else { has_map = false; std::cout << "No texture found for " << filename << std::endl; }
+    if (has_map) {
+        size_t num_pixels = image.width * image.height;
+        float4* float_pixels_roughness = new float4[num_pixels];
+        if (image.pixel_format == sutil::BufferImageFormat::UNSIGNED_BYTE4) {
 
+            unsigned char* udata = static_cast<unsigned char*>(image.data);
+            for (size_t i = 0; i < num_pixels; ++i) {
+                float r = udata[i * 4 + 0] / 255.0f;
+                float g = udata[i * 4 + 1] / 255.0f;
+                float b = udata[i * 4 + 2] / 255.0f;
+                float a = udata[i * 4 + 3] / 255.0f;
+                float_pixels_roughness[i] = make_float4(r, g, b, a);
+            }
+
+            // Replace the original data pointer and format
+            image.data = float_pixels_roughness;
+            image.pixel_format = sutil::BufferImageFormat::FLOAT4;
+        }
+        size_t tex_size = num_pixels * sizeof(float4);
+
+        CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&gpu_buffer), tex_size));
+        CUDA_CHECK(cudaMemcpy(
+            reinterpret_cast<void*>(gpu_buffer),
+            image.data,
+            tex_size,
+            cudaMemcpyHostToDevice
+        ));
+        // Store this pointer in a vector so we can assign it in the hit records later
+    }
+}
+
+
+CUdeviceptr d_tex_data;
+CUdeviceptr d_roughness_data;
+CUdeviceptr d_normal_data;
+CUdeviceptr d_metallic_data;
 
 void createSceneGeometry(
     std::vector<TriangleData>& triangles,
@@ -343,30 +414,20 @@ void createSceneGeometry(
         // We'll pick a simple default material for all imported geometry from that file.
         // For example, a neutral gray material:
         // (If desired, you can vary color per file)
+        float minHeight = 10.0f;
 
         // Index to the next material we add
         // sceneMaterials is empty initially, we start adding materials as we go.
         for (int i = 0; i < (int)filenames.size(); i++)
         {
-            // Define a material for this OBJ file (simple variation: color depends on i)
-            Material objMaterial = {
-                make_float3(0.6f, 0.4f, 0.4f) + 0.1f * make_float3(i, i, i), // diff color per file
-                make_float3(1.0f, 1.0f, 1.0f),
-                0.0f,
-                0.5f,
-                false,
-                false
-            };
-
-            int currentMaterialIndex = (int)sceneMaterials.size();
-            sceneMaterials.push_back(objMaterial);
 
             tinyobj::attrib_t attrib;
             std::vector<tinyobj::shape_t> shapes;
             std::vector<tinyobj::material_t> materials;
             std::string warn, err;
 
-            bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &err, filenames[i].c_str());
+            std::string mtl_basepath = "C:\\ProgramData\\NVIDIA Corporation\\OptiX SDK 8.0.0\\SDK\\optixSphere\\";
+            bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &err, filenames[i].c_str(), mtl_basepath.c_str());
 
             if (!warn.empty()) {
                 std::cerr << "TinyObjLoader Warning: " << warn << std::endl;
@@ -398,6 +459,7 @@ void createSceneGeometry(
 
                     float4 vertices[3];
                     float4 normals[3];
+                    float2 uv[3]; // store UV per vertex of the triangle
 
                     // Iterate over vertices in the face
                     for (int v = 0; v < 3; v++)
@@ -406,7 +468,7 @@ void createSceneGeometry(
                         tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
                         tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
                         tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
-                        vertices[v] = make_float4(vx + i * 3.0f, vy, vz, 1.0f);
+                        vertices[v] = make_float4(vx + (i - 0.f) * 4.f, vy, vz, 0.0f);
 
                         if (idx.normal_index >= 0) {
                             tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
@@ -417,7 +479,23 @@ void createSceneGeometry(
                         else {
                             normals[v] = make_float4(0.0f, 1.0f, 0.0f, 0.0f); // fallback normal if none
                         }
+
+                        
+                        if (!attrib.texcoords.empty()) {
+                            // idx is the tinyobj::index_t for the vertex
+                            tinyobj::real_t tx = attrib.texcoords[2 * idx.texcoord_index + 0];
+                            tinyobj::real_t ty = attrib.texcoords[2 * idx.texcoord_index + 1];
+                            uv[v] = make_float2(tx, ty);
+                        }
+                        else {
+                            // No texture coordinates, assign dummy UV
+                            uv[v] = make_float2(0.0f, 0.0f);
+                        }
                     }
+
+					if (vertices[0].y < minHeight) minHeight = vertices[0].y;
+					if (vertices[1].y < minHeight) minHeight = vertices[1].y;
+					if (vertices[2].y < minHeight) minHeight = vertices[2].y;
 
                     TriangleData tri;
                     tri.v0 = vertices[0];
@@ -426,12 +504,84 @@ void createSceneGeometry(
                     tri.n0 = normals[0];
                     tri.n1 = normals[1];
                     tri.n2 = normals[2];
+					tri.uv0 = uv[0];
+					tri.uv1 = uv[1];
+					tri.uv2 = uv[2];
 
                     triangles.push_back(tri);
 
                     index_offset += fv;
                 }
             }
+
+            Material objMaterial;
+
+            sutil::ImageBuffer albedo_image;
+            bool have_texture = false;
+            std::string tex_filename = filenames[i].substr(0, filenames[i].find_last_of('.')) + "_albedo.png";
+            setUpImageTexture(
+                have_texture, albedo_image,
+                tex_filename, d_tex_data);
+
+            sutil::ImageBuffer roughness_image;
+            bool have_roughness_map = false;
+            std::string roughness_filename = filenames[i].substr(0, filenames[i].find_last_of('.')) + "_roughness.png";
+			setUpImageTexture(
+                have_roughness_map, roughness_image,
+                roughness_filename, d_roughness_data);
+
+            sutil::ImageBuffer normal_image;
+            bool have_normal_map = false;
+            std::string normal_filename = filenames[i].substr(0, filenames[i].find_last_of('.')) + "_normal.png";
+            setUpImageTexture(
+                have_normal_map, normal_image,
+                normal_filename, d_normal_data);
+
+            sutil::ImageBuffer metallic_image;
+            bool have_metallic_map = false;
+            std::string metallic_filename = filenames[i].substr(0, filenames[i].find_last_of('.')) + "_metallic.png";
+			setUpImageTexture(
+                have_metallic_map, metallic_image,
+				metallic_filename, d_metallic_data);
+
+			// std::cout << "has albedo map: " << have_texture << std::endl;
+			// std::cout << "has roughness map: " << objMaterial.has_roughness_map << std::endl;
+			// std::cout << "has normal map: " << objMaterial.has_normal_map << std::endl;
+			// std::cout << "has metallic map: " << objMaterial.has_metallic_map << std::endl;
+
+            float3 color = make_float3(rnd_f(), rnd_f(), rnd_f()); // diff color per file
+            float decider = rnd_f();
+			if (have_texture || have_metallic_map || have_normal_map || have_roughness_map) {
+                // If we have a texture, set a neutral fallback
+                objMaterial.color = make_float3(1.0f, 1.0f, 1.0f);
+                objMaterial.specular = make_float3(1.0f, 1.0f, 1.0f);
+                objMaterial.emission = 0.0f;
+                objMaterial.roughness = 1.0f; // something reasonable
+                objMaterial.metallic = false;
+                objMaterial.transparent = false;
+				objMaterial.has_texture = have_texture;
+				objMaterial.albedo_image = albedo_image;
+				objMaterial.has_roughness_map = have_roughness_map;
+				objMaterial.roughness_image = roughness_image;
+				objMaterial.has_normal_map = have_normal_map;
+				objMaterial.normal_image = normal_image;
+				objMaterial.has_metallic_map = have_metallic_map;
+				objMaterial.metallic_image = metallic_image;
+            }
+            else {
+                // Existing random material generation code:
+                float3 color = make_float3(rnd_f(), rnd_f(), rnd_f());
+                float decider = rnd_f();
+                objMaterial.color = color;
+				objMaterial.specular = color;
+				objMaterial.emission = decider < 0.1f ? 100.0f : 0.0f; // TODO this can fuck us
+				objMaterial.roughness = rnd_f();
+				objMaterial.metallic = decider > 0.5f && decider < 0.65f;
+				objMaterial.transparent = false;
+            }
+            
+            int currentMaterialIndex = (int)sceneMaterials.size();
+            sceneMaterials.push_back(objMaterial);
 
             size_t endIndex = triangles.size();
             // All triangles from this file get the same material index
@@ -456,7 +606,7 @@ void createSceneGeometry(
         int floorMaterialIndex = (int)sceneMaterials.size();
         sceneMaterials.push_back(floorMaterial);
 
-        float floor_y = 0.0f;
+        float floor_y = minHeight - 10;
         float floor_size = 200.0f;
 
         float4 fv0 = make_float4(-floor_size, floor_y, -floor_size, 0.0f);
@@ -672,15 +822,15 @@ int main(int argc, char* argv[])
         CUdeviceptr            d_gas_output_buffer; // Device pointer for the buffer that will store the GAS
         CUdeviceptr d_vertex_buffer;
         CUdeviceptr d_normal_buffer;
+		CUdeviceptr d_texcoord_buffer;
         CUdeviceptr  d_mat_indices = 0;
 
         bool loadFromFile = true; // Flag to load geometry from an OBJ file
         std::string projectPath = "C:\\ProgramData\\NVIDIA Corporation\\OptiX SDK 8.0.0\\SDK\\optixSphere\\";
         std::vector<std::string> objFilename = {
-            projectPath + "statue3.obj",
-            projectPath + "statue4.obj"
+            projectPath + "test.obj"
         };
-        std::string hdr_filename = projectPath + "env5.exr"; // Replace with your HDRi image path.
+        std::string hdr_filename = projectPath + "env4.exr"; // Replace with your HDRi image path.
         sutil::ImageBuffer hdr_image = sutil::loadImage(hdr_filename.c_str());
 
         // Create scene geometry: spheres and ground plane
@@ -692,6 +842,7 @@ int main(int argc, char* argv[])
         // create a g_vertices array of all the vertices
         std::vector<float4> g_vertices;
         std::vector<float4> g_normals;
+		std::vector<float2> g_texcoords;
         for (int i = 0; i < NUM_TRIANGLES; ++i) {
             g_vertices.push_back(triangles[i].v0);
             g_vertices.push_back(triangles[i].v1);
@@ -699,6 +850,9 @@ int main(int argc, char* argv[])
             g_normals.push_back(triangles[i].n0);
             g_normals.push_back(triangles[i].n1);
             g_normals.push_back(triangles[i].n2);
+			g_texcoords.push_back(triangles[i].uv0);
+			g_texcoords.push_back(triangles[i].uv1);
+			g_texcoords.push_back(triangles[i].uv2);
         }
 
         {
@@ -726,11 +880,16 @@ int main(int argc, char* argv[])
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex_buffer), g_vertices.size() * sizeof(float4)));
             CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_vertex_buffer), g_vertices.data(),
                 g_vertices.size() * sizeof(float4), cudaMemcpyHostToDevice));
-
+            
             // Allocate device memory for the array of spheres' center vertices and copy the data from host to device
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_normal_buffer), g_normals.size() * sizeof(float4)));
             CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_normal_buffer), g_normals.data(),
                 g_normals.size() * sizeof(float4), cudaMemcpyHostToDevice));
+
+            // Allocate device memory for the array of spheres' center vertices and copy the data from host to device
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_texcoord_buffer), g_texcoords.size() * sizeof(float2)));
+            CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_texcoord_buffer), g_texcoords.data(),
+                g_texcoords.size() * sizeof(float2), cudaMemcpyHostToDevice));
 
             // Configure the build input to describe the spheres with the provided vertex and radius buffers
             std::vector<uint32_t> triangle_input_flags;
@@ -1042,6 +1201,7 @@ int main(int argc, char* argv[])
 
                 hg_sbts[i].data.vertices = reinterpret_cast<float4*>(d_vertex_buffer);
                 hg_sbts[i].data.normals = reinterpret_cast<float4*>(d_normal_buffer);
+				hg_sbts[i].data.texcoords = !g_texcoords.empty() ? reinterpret_cast<float2*>(d_texcoord_buffer) : nullptr;
 
                 // Fill each of your SBT records with the appropriate color
                 const Material& mat = sceneMaterials[i];
@@ -1051,6 +1211,51 @@ int main(int argc, char* argv[])
                 hg_sbts[i].data.roughness = mat.roughness;
                 hg_sbts[i].data.metallic = mat.metallic;
                 hg_sbts[i].data.transparent = mat.transparent;
+
+                if (mat.has_texture) {
+                    hg_sbts[i].data.albedo_texture_data = reinterpret_cast<float4*>(d_tex_data);
+                    hg_sbts[i].data.tex_width = (int)mat.albedo_image.width;
+                    hg_sbts[i].data.tex_height = (int)mat.albedo_image.height;
+                    hg_sbts[i].data.has_texture = true;
+                }
+                else {
+                    hg_sbts[i].data.albedo_texture_data = nullptr;
+					hg_sbts[i].data.tex_width = 0; hg_sbts[i].data.tex_height = 0;
+					hg_sbts[i].data.has_texture = false;
+                }
+                if (mat.has_roughness_map) {
+					hg_sbts[i].data.roughness_texture_data = reinterpret_cast<float4*>(d_roughness_data);
+					hg_sbts[i].data.roughness_width = (int)mat.roughness_image.width;
+					hg_sbts[i].data.roughness_height = (int)mat.roughness_image.height;
+					hg_sbts[i].data.has_roughness_map = true;
+				}
+				else {
+					hg_sbts[i].data.roughness_texture_data = nullptr;
+					hg_sbts[i].data.roughness_width = 0; hg_sbts[i].data.roughness_height = 0;
+					hg_sbts[i].data.has_roughness_map = false;
+				}
+                if (mat.has_normal_map) {
+                    hg_sbts[i].data.normal_texture_data = reinterpret_cast<float4*>(d_normal_data);
+                    hg_sbts[i].data.normal_width = (int)mat.normal_image.width;
+                    hg_sbts[i].data.normal_height = (int)mat.normal_image.height;
+                    hg_sbts[i].data.has_normal_map = true;
+                }
+				else {
+					hg_sbts[i].data.normal_texture_data = nullptr;
+					hg_sbts[i].data.normal_width = 0; hg_sbts[i].data.normal_height = 0;
+					hg_sbts[i].data.has_normal_map = false;
+				}
+                if (mat.has_metallic_map) {
+					hg_sbts[i].data.metallic_texture_data = reinterpret_cast<float4*>(d_metallic_data);
+					hg_sbts[i].data.metallic_width = (int)mat.metallic_image.width;
+					hg_sbts[i].data.metallic_height = (int)mat.metallic_image.height;
+					hg_sbts[i].data.has_metallic_map = true;
+				}
+                else {
+					hg_sbts[i].data.metallic_texture_data = nullptr;
+					hg_sbts[i].data.metallic_width = 0; hg_sbts[i].data.metallic_height = 0;
+					hg_sbts[i].data.has_metallic_map = false;
+				}
             }
 
             // Copy the hit group SBT records to the device
@@ -1299,6 +1504,11 @@ int main(int argc, char* argv[])
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(params.accum_buffer)));
             CUDA_CHECK(cudaFree((void*)d_vertex_buffer)); // TODO CHANGE TO VERTEX
             CUDA_CHECK(cudaFree((void*)d_normal_buffer)); // TODO CHANGE TO NORMAL
+			CUDA_CHECK(cudaFree((void*)d_texcoord_buffer)); // TODO CHANGE TO TEXCOORD
+			CUDA_CHECK(cudaFree((void*)d_tex_data));
+			CUDA_CHECK(cudaFree((void*)d_roughness_data));
+			CUDA_CHECK(cudaFree((void*)d_metallic_data));
+			CUDA_CHECK(cudaFree((void*)d_normal_data));
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_mat_indices)));
             CUDA_CHECK(cudaFree(d_hdr_image_data));
 

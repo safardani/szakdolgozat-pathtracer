@@ -1,18 +1,9 @@
-struct Material // TODO move to .h
-{
-    float3 color;
-    float3 specular;   // Specular reflectance of the material.
-
-    float emission;
-    float roughness;  // Roughness value of the material.
-    bool metallic;     // Whether the material is metallic or not.
-    bool transparent;  // Whether the material is transparent or not.
-};
-
 // The SphereData structure holds the data for a single sphere in the scene.
 struct TriangleData
 {
 	float4 v0, v1, v2, n0, n1, n2;
+    // UV coordinates per vertex
+	float2 uv0, uv1, uv2;
 };
 
 // The Params structure holds the scene parameters that are read by the ray generation program.
@@ -75,12 +66,37 @@ struct MissData
 // The HitGroupData structure would contain data about the materials or geometric properties if needed.
 struct HitGroupData
 {
+    float4* albedo_texture_data;
+    int     tex_width;
+    int     tex_height;
+    bool    has_texture;
+
+    // Roughness map
+    float4* roughness_texture_data;
+    int     roughness_width;
+    int     roughness_height;
+    bool    has_roughness_map;
+
+    // Normal map
+    float4* normal_texture_data;
+    int     normal_width;
+    int     normal_height;
+    bool    has_normal_map;
+
+    // Metallic map
+    float4* metallic_texture_data;
+    int     metallic_width;
+    int     metallic_height;
+    bool    has_metallic_map;
+
+    float2* texcoords;
     float4* vertices;
     float4* normals;
+
     float3 emission_color;
     float3 diffuse_color;
-    float3 specular;   // Specular reflectance of the material.
-    float  roughness;  // Roughness value of the material.
-    bool metallic;     // Whether the material is metallic or not.
-    bool transparent;  // Whether the material is transparent or not.
+    float3 specular;
+    float  roughness;
+    bool   metallic;
+    bool   transparent;
 };

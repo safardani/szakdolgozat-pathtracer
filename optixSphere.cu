@@ -409,7 +409,7 @@ extern "C" __global__ void __raygen__rg()
     params.accum_buffer[image_index] = make_float4(accum_color, 1.0f);
 
     // Exposure compensation value
-    float exposure = 0.0f;
+    float exposure = -0.5f;
 
     // Apply exposure before tonemapping
     payload_rgb = accum_color * exp2(exposure); // Incorporate exposure
@@ -427,14 +427,17 @@ extern "C" __global__ void __raygen__rg()
         powf(payload_rgb.y, 1.0f / gamma),
         powf(payload_rgb.z, 1.0f / gamma));
 
+    float contrast = 1.25f; // for example, >1 increases contrast, <1 decreases it
+    payload_rgb = 0.5f + contrast * (payload_rgb - 0.5f);
+
 	params.frame_buffer[idx.y * params.image_width + idx.x] = make_color(payload_rgb);
 }
 
 // GGX Normal Distribution Function (NDF)
 static __forceinline__ __device__ float D_GGX(float3 n, float3 h, float a)
 {
-    if (a <= 0.02) {
-        if (dot(n, h) >= 0.999) {
+    if (a <= 0.0001f) {
+        if (dot(n, h) >= 0.999f) {
             return 1;
         } else {
             return 0;
@@ -561,6 +564,51 @@ extern "C" __global__ void __miss__radiance()
     setPayloadMiss(prd);
 }
 
+static __forceinline__ __device__ float4 sampleTexture(
+    float4* tex_data, int width, int height, float u, float v)
+{
+    // Repeat wrap
+    u = u - floorf(u);
+    v = v - floorf(v);
+
+    float x = u * width - 0.5f;
+    float y = v * height - 0.5f;
+
+    int x0 = (int)floorf(x);
+    int y0 = (int)floorf(y);
+    int x1 = (x0 + 1) % width;
+    int y1 = (y0 + 1) % height;
+
+    float s = x - floorf(x);
+    float t = y - floorf(y);
+
+    float4 c00 = tex_data[y0 * width + x0];
+    float4 c10 = tex_data[y0 * width + x1];
+    float4 c01 = tex_data[y1 * width + x0];
+    float4 c11 = tex_data[y1 * width + x1];
+
+    float4 c0 = lerp(c00, c10, s);
+    float4 c1 = lerp(c01, c11, s);
+    float4 c = lerp(c0, c1, t);
+    return c;
+}
+
+static __forceinline__ __device__ float3 setMaterialProperty(
+    bool has_texture, float4* texture_data, float3 fallback,int w, int h, float u, float v) {
+
+    if (has_texture && texture_data != nullptr) {
+        float4 tex_col = sampleTexture(
+            texture_data,
+            w, h, u, v);
+        return make_float3(tex_col.x, tex_col.y, tex_col.z);
+    }
+    else {
+        // Fallback to the diffuse_color if no texture
+        return fallback;
+    }
+
+}
+
 // The closest hit program. This is called when a ray hits the closest geometry.
 extern "C" __global__ void __closesthit__radiance()
 {
@@ -582,10 +630,10 @@ extern "C" __global__ void __closesthit__radiance()
     const float3 v0 = make_float3(hit_group_data->vertices[vert_idx_offset + 0]);
     const float3 v1 = make_float3(hit_group_data->vertices[vert_idx_offset + 1]);
     const float3 v2 = make_float3(hit_group_data->vertices[vert_idx_offset + 2]);
-    /*
-    const float3 N_0 = normalize(cross(v1 - v0, v2 - v0));
+    //*
+    float3 flat_normal = normalize(cross(v1 - v0, v2 - v0));
+    flat_normal = faceforward(flat_normal, -ray_dir, flat_normal);
 
-    const float3 normal = faceforward(N_0, -ray_dir, N_0);
     //*/
     Payload payload = getPayloadCH();
 
@@ -599,6 +647,13 @@ extern "C" __global__ void __closesthit__radiance()
     const float bary_beta = barycentrics.x;
     const float bary_gamma = barycentrics.y;
     const float bary_alpha = 1.0f - bary_beta - bary_gamma;
+
+    float2 uv0 = hit_group_data->texcoords[vert_idx_offset + 0];
+    float2 uv1 = hit_group_data->texcoords[vert_idx_offset + 1];
+    float2 uv2 = hit_group_data->texcoords[vert_idx_offset + 2];
+
+    float2 uv_final = uv0 * bary_alpha + uv1 * bary_beta + uv2 * bary_gamma;
+    uv_final.y = 1.0f - uv_final.y;
     
     // Interpolate normal
     float3 normal = bary_alpha * n0 + bary_beta * n1 + bary_gamma * n2;
@@ -611,16 +666,37 @@ extern "C" __global__ void __closesthit__radiance()
     //normal = faceforward(normal, -ray_dir, normal); 
     //*/
 
+	//if (dot(normal, ray_dir) > -0.25f) normal = flat_normal;
+    //normal = flat_normal;
+
     const float3 hit_pos = ray_orig + t_hit * ray_dir;
 
 	unsigned int seed = payload.seed;
 
-    float3 specular_albedo = hit_group_data->specular;
-	float3 diffuse_albedo = hit_group_data->diffuse_color;
+    float3 diffuse_albedo = setMaterialProperty(
+        hit_group_data->has_texture, hit_group_data->albedo_texture_data,
+        hit_group_data->diffuse_color, hit_group_data->tex_width,
+        hit_group_data->tex_height, uv_final.x, uv_final.y);
+
+    float3 normal_map = setMaterialProperty(
+        hit_group_data->has_normal_map, hit_group_data->normal_texture_data,
+        make_float3(0,1,0), hit_group_data->normal_width,
+        hit_group_data->normal_height, uv_final.x, uv_final.y);
+
+    float3 specular_albedo = diffuse_albedo;
 	float3 emission_color = hit_group_data->emission_color;
 
-	float roughness = hit_group_data->roughness; //roughness *= roughness;
-	float metallicity = hit_group_data->metallic ? 1.0f : 0.0f;
+	float roughness = setMaterialProperty(
+        hit_group_data->has_roughness_map, hit_group_data->roughness_texture_data,
+        make_float3(hit_group_data->roughness), hit_group_data->roughness_width,
+        hit_group_data->roughness_height, uv_final.x, uv_final.y).x;
+
+    //*
+	float metallicity = setMaterialProperty(
+	hit_group_data->has_metallic_map, hit_group_data->metallic_texture_data,
+	hit_group_data->metallic ? make_float3(1) : make_float3(0), hit_group_data->metallic_width,
+	hit_group_data->metallic_height, uv_final.x, uv_final.y).x;
+
 	float transparency = hit_group_data->transparent ? 1.0f : 0.0f;
 	float ior = 1.5f;
 
@@ -670,13 +746,13 @@ extern "C" __global__ void __closesthit__radiance()
     
     float3 F = Fresnel_Schlick(fmaxf(dot(normal, -ray_dir), 0.0f), F0, specular_albedo);
 	float D = D_GGX(normal, half_vec, alpha); // normal distribution function for brdf
-	float G = G_Smith(alpha, normal, -ray_dir, light_dir_diffuse, normalize(light_dir_diffuse - ray_dir)); // geometry function for brdf
+	float G = G_Smith(alpha, normal, -ray_dir, light_dir, normalize(light_dir - ray_dir)); // geometry function for brdf
 
     // combined specular brdf
-	float3 brdf_specular = F * D * G / (4.0f * fabsf(dot(normal, -ray_dir)) * fabsf(dot(normal, light_dir_diffuse))); // TODO DIFFUSE OR NOT?
+	float3 brdf_specular = F * D * G / (4.0f * fabsf(dot(normal, -ray_dir)) * fabsf(dot(normal, light_dir))); // TODO DIFFUSE OR NOT?
 	//half_vec = normalize(light_dir_diffuse - ray_dir); // TODO is this correct? this is so the ggx sampling is ONLY affecting D, everything else is diffuse
 
-    float NdotH = fmaxf(dot(normal, half_vec), 0.0f);
+    float NdotH = fmaxf(dot(normal, half_vec), 0.001f);
     float VdotH = fabsf(dot(-ray_dir, half_vec));
     VdotH = fmaxf(dot(-ray_dir, half_vec), 0.001f);
 	float NdotV = fmaxf(dot(normal, - ray_dir), 0.0f);
