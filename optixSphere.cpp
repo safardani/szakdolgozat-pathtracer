@@ -7,6 +7,8 @@
 
 // Sample-specific configuration data
 #include <sampleConfig.h>
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "tiny_obj_loader.h"
 
 // Utility headers to handle CUDA buffers, exceptions, and other general tasks
 #include <sutil/CUDAOutputBuffer.h>
@@ -21,6 +23,7 @@
 #include <iostream>
 #include <string>
 #include <random>
+#include <array>
 
 // Camera and trackball handling for interaction
 #include <sutil/Camera.h>
@@ -31,7 +34,6 @@
 #include <sutil/GLDisplay.h>
 
 
-
 /**
     A Shader Binding Table (SBT) record is a data structure in OptiX to map the
     intersection of rays and geometry, to the appropriate shaders that should be executed.
@@ -39,9 +41,9 @@
 
     1. Header: Contains the shader identifiers that get executed when a ray hits the geometry.
     2. Data: User-defined data associated with that specific hit, like the surface's material properties.
-    
+
     Template needed for creating SBT records for the different shader types (ray generation, miss, hit).
-    
+
     @tparam T A struct representing the user-defined data payload for a specific shader type.
 */
 template <typename T>
@@ -71,10 +73,10 @@ int32_t mouse_button = -1;
 // Configure the camera for the scene. Sets the eye position, look-at point, up direction, etc.
 void configureCamera(sutil::Camera& cam, const uint32_t width, const uint32_t height)
 {
-    camera.setEye({ 2.0f, 3.0f, 11.0f });
-    camera.setLookat({ 0.0f, 0.0f, 4.0f });
-    camera.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f )));
-    camera.setFovY(90.0f);
+    camera.setEye({ 0.0f, 2.0f, 6.0f });
+    camera.setLookat({ 0.0f, 0.0f, 0.0f });
+    camera.setUp(normalize(make_float3(0.0f, 1.0f, 0.0f)));
+    camera.setFovY(50.0f);
     camera_changed = true;
 
     trackball.setCamera(&camera);
@@ -195,7 +197,7 @@ static void keyCallback(GLFWwindow* window, int32_t key, int32_t /*scancode*/, i
             camera_changed = true;
         }
     }
-    }
+}
 
 // Handles mouse scroll events
 static void scrollCallback(GLFWwindow* window, double xscroll, double yscroll)
@@ -240,9 +242,9 @@ void updateState(sutil::CUDAOutputBuffer<uchar4>& output_buffer, Params& params)
     if (camera_changed || resize_dirty)
         params.subframe_index = 0;
 
-	if (params.dof != dof)
-		params.dof = dof;
-	
+    if (params.dof != dof)
+        params.dof = dof;
+
     handleCameraUpdate(params);
     handleResize(output_buffer, params);
 }
@@ -260,6 +262,342 @@ void displaySubframe(sutil::CUDAOutputBuffer<uchar4>& output_buffer, sutil::GLDi
         framebuf_res_y,
         output_buffer.getPBO()
     );
+}
+
+void generateSphereMesh(const float3& center, float radius, int stacks, int slices, const Material& material, std::vector<TriangleData>& triangles)
+{
+    std::vector<float4> vertices;
+    std::vector<float4> normals;
+
+    // Generate vertices and normals
+    for (int i = 0; i <= stacks; ++i)
+    {
+        float phi = M_PI * i / stacks;
+        float y = radius * cosf(phi);
+        float r = radius * sinf(phi);
+
+        for (int j = 0; j <= slices; ++j)
+        {
+            float theta = 2.0f * M_PI * j / slices;
+            float x = r * cosf(theta);
+            float z = r * sinf(theta);
+
+            float4 vertex = make_float4(center.x + x, center.y + y, center.z + z, 1.0f);
+            vertices.push_back(vertex);
+
+            // Compute normal
+            float4 normal = make_float4(normalize(make_float3(x, y, z)), 0);
+            normals.push_back(normal);
+        }
+    }
+
+    // Generate triangles and assign normals
+    for (int i = 0; i < stacks; ++i)
+    {
+        for (int j = 0; j < slices; ++j)
+        {
+            int first = i * (slices + 1) + j;
+            int second = first + slices + 1;
+
+            // First triangle
+            TriangleData tri1;
+            tri1.v0 = vertices[first];
+            tri1.v1 = vertices[second];
+            tri1.v2 = vertices[first + 1];
+            tri1.n0 = normals[first];
+            tri1.n1 = normals[second];
+            tri1.n2 = normals[first + 1];
+            //tri1.material = material;
+            triangles.push_back(tri1);
+
+            // Second triangle
+            TriangleData tri2;
+            tri2.v0 = vertices[first + 1];
+            tri2.v1 = vertices[second];
+            tri2.v2 = vertices[second + 1];
+            tri2.n0 = normals[first + 1];
+            tri2.n1 = normals[second];
+            tri2.n2 = normals[second + 1];
+            //tri2.material = material;
+            triangles.push_back(tri2);
+        }
+    }
+}
+
+
+
+void createSceneGeometry(
+    std::vector<TriangleData>& triangles,
+    std::vector<Material>& sceneMaterials,
+    std::vector<uint32_t>& g_mat_indices,
+    bool loadFromFile = false,
+    std::vector<std::string> filenames = {}
+) {
+    if (loadFromFile)
+    {
+        // Clear materials and g_mat_indices just in case
+        sceneMaterials.clear();
+        g_mat_indices.clear();
+
+        // For each input file, we assign one material.
+        // We'll pick a simple default material for all imported geometry from that file.
+        // For example, a neutral gray material:
+        // (If desired, you can vary color per file)
+
+        // Index to the next material we add
+        // sceneMaterials is empty initially, we start adding materials as we go.
+        for (int i = 0; i < (int)filenames.size(); i++)
+        {
+            // Define a material for this OBJ file (simple variation: color depends on i)
+            Material objMaterial = {
+                make_float3(0.6f, 0.4f, 0.4f) + 0.1f * make_float3(i, i, i), // diff color per file
+                make_float3(1.0f, 1.0f, 1.0f),
+                0.0f,
+                0.5f,
+                false,
+                false
+            };
+
+            int currentMaterialIndex = (int)sceneMaterials.size();
+            sceneMaterials.push_back(objMaterial);
+
+            tinyobj::attrib_t attrib;
+            std::vector<tinyobj::shape_t> shapes;
+            std::vector<tinyobj::material_t> materials;
+            std::string warn, err;
+
+            bool ret = tinyobj::LoadObj(&attrib, &shapes, &materials, &err, filenames[i].c_str());
+
+            if (!warn.empty()) {
+                std::cerr << "TinyObjLoader Warning: " << warn << std::endl;
+            }
+
+            if (!err.empty()) {
+                std::cerr << "TinyObjLoader Error: " << err << std::endl;
+            }
+
+            if (!ret) {
+                throw std::runtime_error("Failed to load/parse .obj file.");
+            }
+
+            // Store current triangle count before we add new ones
+            size_t startIndex = triangles.size();
+
+            // Iterate over shapes and their faces
+            for (const auto& shape : shapes)
+            {
+                size_t index_offset = 0;
+                for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++)
+                {
+                    int fv = shape.mesh.num_face_vertices[f];
+                    if (fv != 3) {
+                        // Skip non-triangle faces
+                        index_offset += fv;
+                        continue;
+                    }
+
+                    float4 vertices[3];
+                    float4 normals[3];
+
+                    // Iterate over vertices in the face
+                    for (int v = 0; v < 3; v++)
+                    {
+                        tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
+                        tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
+                        tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
+                        tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
+                        vertices[v] = make_float4(vx + i * 3.0f, vy, vz, 1.0f);
+
+                        if (idx.normal_index >= 0) {
+                            tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
+                            tinyobj::real_t ny = attrib.normals[3 * idx.normal_index + 1];
+                            tinyobj::real_t nz = attrib.normals[3 * idx.normal_index + 2];
+                            normals[v] = make_float4(normalize(make_float3(nx, ny, nz)), 0.0f);
+                        }
+                        else {
+                            normals[v] = make_float4(0.0f, 1.0f, 0.0f, 0.0f); // fallback normal if none
+                        }
+                    }
+
+                    TriangleData tri;
+                    tri.v0 = vertices[0];
+                    tri.v1 = vertices[1];
+                    tri.v2 = vertices[2];
+                    tri.n0 = normals[0];
+                    tri.n1 = normals[1];
+                    tri.n2 = normals[2];
+
+                    triangles.push_back(tri);
+
+                    index_offset += fv;
+                }
+            }
+
+            size_t endIndex = triangles.size();
+            // All triangles from this file get the same material index
+            for (size_t t = startIndex; t < endIndex; ++t)
+            {
+                g_mat_indices.push_back((uint32_t)currentMaterialIndex);
+            }
+
+            std::cout << "Loaded " << (endIndex - startIndex) << " triangles from " << filenames[i] << std::endl;
+        }
+
+        // After loading all files, we add the floor geometry
+        Material floorMaterial = {
+            make_float3(1.0f, 1.0f, 1.0f),
+            make_float3(1.0f, 1.0f, 1.0f),
+            0.0f,
+            1.0f,
+            false,
+            false
+        };
+
+        int floorMaterialIndex = (int)sceneMaterials.size();
+        sceneMaterials.push_back(floorMaterial);
+
+        float floor_y = 0.0f;
+        float floor_size = 200.0f;
+
+        float4 fv0 = make_float4(-floor_size, floor_y, -floor_size, 0.0f);
+        float4 fv1 = make_float4(-floor_size, floor_y, floor_size, 0.0f);
+        float4 fv2 = make_float4(floor_size, floor_y, -floor_size, 0.0f);
+        float4 fv3 = make_float4(floor_size, floor_y, floor_size, 0.0f);
+
+        float4 floorNormal = make_float4(0.0f, 1.0f, 0.0f, 0.0f);
+
+        size_t floorStart = triangles.size();
+
+        // First floor triangle
+        {
+            TriangleData floorTri1;
+            floorTri1.v0 = fv0;
+            floorTri1.v1 = fv1;
+            floorTri1.v2 = fv2;
+            floorTri1.n0 = floorNormal;
+            floorTri1.n1 = floorNormal;
+            floorTri1.n2 = floorNormal;
+            triangles.push_back(floorTri1);
+            g_mat_indices.push_back((uint32_t)floorMaterialIndex);
+        }
+
+        // Second floor triangle
+        {
+            TriangleData floorTri2;
+            floorTri2.v0 = fv2;
+            floorTri2.v1 = fv1;
+            floorTri2.v2 = fv3;
+            floorTri2.n0 = floorNormal;
+            floorTri2.n1 = floorNormal;
+            floorTri2.n2 = floorNormal;
+            triangles.push_back(floorTri2);
+            g_mat_indices.push_back((uint32_t)floorMaterialIndex);
+        }
+
+        std::cout << "Loaded models with " << triangles.size() << " triangles total." << std::endl;
+    }
+    else
+    {
+        // Clear materials and g_mat_indices just in case
+        sceneMaterials.clear();
+        g_mat_indices.clear();
+
+        // Define your materials here so it's all self-contained:
+        Material groundMaterial = {
+            make_float3(0.5f, 0.5f, 0.5f), // color
+            make_float3(1.0f, 1.0f, 1.0f), // specular
+            0.0f, // emission
+            0.8f, // roughness
+            false, // metallic
+            false  // transparent
+        };
+
+        Material redSphere = {
+            make_float3(1.0f, 0.0f, 0.0f),
+            make_float3(1.0f, 0.0f, 0.0f),
+            0.0f, 0.0f, false, false
+        };
+
+        Material greenSphere = {
+            make_float3(0.0f, 1.0f, 0.0f),
+            make_float3(0.0f, 1.0f, 0.0f),
+            0.0f, 0.0f, false, false
+        };
+
+        Material blueSphere = {
+            make_float3(0.0f, 0.0f, 1.0f),
+            make_float3(0.0f, 0.0f, 1.0f),
+            0.0f, 0.0f, false, false
+        };
+
+        // Add them to sceneMaterials in a known order:
+        // Index 0: ground
+        // Index 1: red sphere
+        // Index 2: green sphere
+        // Index 3: blue sphere
+        sceneMaterials.push_back(groundMaterial);
+        sceneMaterials.push_back(redSphere);
+        sceneMaterials.push_back(greenSphere);
+        sceneMaterials.push_back(blueSphere);
+
+        // Generate ground plane
+        float ground_y = 0.0f;
+        float plane_size = 10.0f;
+
+        float4 v0 = make_float4(-plane_size, ground_y, -plane_size, 1.0f);
+        float4 v1 = make_float4(-plane_size, ground_y, plane_size, 1.0f);
+        float4 v2 = make_float4(plane_size, ground_y, -plane_size, 1.0f);
+        float4 v3 = make_float4(plane_size, ground_y, plane_size, 1.0f);
+
+        float4 groundNormal = make_float4(0.0f, 1.0f, 0.0f, 0.0f);
+
+        TriangleData tri1;
+        tri1.v0 = v0; tri1.v1 = v1; tri1.v2 = v2;
+        tri1.n0 = groundNormal; tri1.n1 = groundNormal; tri1.n2 = groundNormal;
+        triangles.push_back(tri1);
+        g_mat_indices.push_back(0); // ground material index is 0
+
+        TriangleData tri2;
+        tri2.v0 = v2; tri2.v1 = v1; tri2.v2 = v3;
+        tri2.n0 = groundNormal; tri2.n1 = groundNormal; tri2.n2 = groundNormal;
+        triangles.push_back(tri2);
+        g_mat_indices.push_back(0); // ground material index is 0
+
+        // Generate spheres
+        int numSpheres = 3;
+        float3 sphereCenters[] = {
+            make_float3(-3.0f, 1.0f, 0.0f),
+            make_float3(0.0f, 1.0f, 0.0f),
+            make_float3(3.0f, 1.0f, 0.0f)
+        };
+
+        for (int i = 0; i < numSpheres; ++i)
+        {
+            float3 center = sphereCenters[i];
+            float radius = 1.0f;
+            int stacks = 16;
+            int slices = stacks * 2;
+
+            // Store current triangle count before adding this sphere
+            size_t startIndex = triangles.size();
+
+            generateSphereMesh(center, radius, stacks, slices, /*unused material*/groundMaterial, triangles);
+
+            // Assign sphere material indices
+            // Each sphere gets a different material index: red=1, green=2, blue=3
+            uint32_t sphereMatIndex = 1 + i;
+            size_t endIndex = triangles.size();
+            for (size_t t = startIndex; t < endIndex; ++t)
+            {
+                g_mat_indices.push_back(sphereMatIndex);
+            }
+        }
+
+        // After this function completes, `sceneMaterials` has all materials,
+        // `triangles` has all geometry, and `g_mat_indices` has a material index
+        // for every triangle in the exact order they were pushed.
+        std::cout << "Generated " << triangles.size() << " triangles (spheres and ground plane)." << std::endl;
+    }
 }
 
 int main(int argc, char* argv[])
@@ -282,16 +620,20 @@ int main(int argc, char* argv[])
 
         if (arg == "--help" || arg == "-h") {
             printUsageAndExit(argv[0]);
-        } else if (arg == "--file" || arg == "-f") {
+        }
+        else if (arg == "--file" || arg == "-f") {
             if (i < argc - 1) {
                 outfile = argv[++i];
-            } else {
+            }
+            else {
                 printUsageAndExit(argv[0]);
             }
-        } else if (arg.substr(0, 6) == "--dim=") {
+        }
+        else if (arg.substr(0, 6) == "--dim=") {
             const std::string dims_arg = arg.substr(6);
             sutil::parseDimensions(dims_arg.c_str(), width, height);
-        } else {
+        }
+        else {
             std::cerr << "Unknown option '" << arg << "'\n";
             printUsageAndExit(argv[0]);
         }
@@ -318,140 +660,59 @@ int main(int argc, char* argv[])
             OPTIX_CHECK(optixDeviceContextCreate(cuCtx, &options, &context)); // Create the OptiX device context
         }
 
-		bool consistent_generation = false; // Flag to check if the spheres are consistently generated (debug and comparison purposes)
+
+
+
+        bool consistent_generation = false; // Flag to check if the spheres are consistently generated (debug and comparison purposes)
         //
         // Building an acceleration structure to represent the geometry in the scene (Acceleration Handling)
         //
-        std::vector<SphereData> spheres; // Vector to hold the spheres in the scene
+        std::vector<TriangleData> triangles; // Vector to hold the spheres in the scene
         OptixTraversableHandle gas_handle; // Handle to the GAS (Geometry Acceleration Structure) that will be built
         CUdeviceptr            d_gas_output_buffer; // Device pointer for the buffer that will store the GAS
+        CUdeviceptr d_vertex_buffer;
+        CUdeviceptr d_normal_buffer;
+        CUdeviceptr  d_mat_indices = 0;
+
+        bool loadFromFile = true; // Flag to load geometry from an OBJ file
+        std::string projectPath = "C:\\ProgramData\\NVIDIA Corporation\\OptiX SDK 8.0.0\\SDK\\optixSphere\\";
+        std::vector<std::string> objFilename = {
+            projectPath + "statue3.obj",
+            projectPath + "statue4.obj"
+        };
+        std::string hdr_filename = projectPath + "env5.exr"; // Replace with your HDRi image path.
+        sutil::ImageBuffer hdr_image = sutil::loadImage(hdr_filename.c_str());
+
+        // Create scene geometry: spheres and ground plane
+        std::vector<Material> sceneMaterials;
+        std::vector<uint32_t> g_mat_indices;
+        createSceneGeometry(triangles, sceneMaterials, g_mat_indices, /* loadFromFile */ loadFromFile, objFilename);
+#define NUM_TRIANGLES triangles.size()
+
+        // create a g_vertices array of all the vertices
+        std::vector<float4> g_vertices;
+        std::vector<float4> g_normals;
+        for (int i = 0; i < NUM_TRIANGLES; ++i) {
+            g_vertices.push_back(triangles[i].v0);
+            g_vertices.push_back(triangles[i].v1);
+            g_vertices.push_back(triangles[i].v2);
+            g_normals.push_back(triangles[i].n0);
+            g_normals.push_back(triangles[i].n1);
+            g_normals.push_back(triangles[i].n2);
+        }
+
         {
             // Define the build options for the acceleration structure
             OptixAccelBuildOptions accel_options = {};
             accel_options.buildFlags = OPTIX_BUILD_FLAG_ALLOW_COMPACTION | OPTIX_BUILD_FLAG_ALLOW_RANDOM_VERTEX_ACCESS;
             accel_options.operation = OPTIX_BUILD_OPERATION_BUILD;
 
-            // Set the number of spheres to generate
-            #define NUM_SPHERES 40
-
-            // Generate random spheres, each with a random position, but on the same horizontal plane
-            for (int i = 0; i < NUM_SPHERES; ++i) {
-                bool overlap = false;
-				SphereData sphere;
-                if (i == 0) {
-                    // Create a large sphere to act as the ground plane
-					sphere.center = make_float3(0.0f, -1000.5f, 0.0f);
-                    sphere.radius = 1000.f;
-                    sphere.color = make_float3(0.2f);
-                    sphere.specular = sphere.color;
-                    sphere.roughness = 0.8f;
-                    sphere.metallic = false;
-                    sphere.transparent = false;
-                    sphere.emission = 0.0f;
-				} else if (!consistent_generation) {
-                    float type_gen = rnd_f();
-                    sphere.emission = 0.0f;
-
-                    if (type_gen < 0.2f) {
-						// Create a transparent sphere
-						sphere.metallic = false;
-						sphere.transparent = true;
-                        if (type_gen < 0.1f) {
-							sphere.roughness = 0.025f;
-						} else {
-							sphere.roughness = 0.35f;
-						}
-					} else if (type_gen < 0.6f) {
-						// Create a metallic sphere
-						sphere.metallic = true;
-						sphere.transparent = false;
-                        if (type_gen < 0.4f) {
-                            sphere.roughness = type_gen - 0.2f;
-                        } else {
-                            sphere.roughness = 0.4f + 2.0f * (type_gen - 0.4f);
-                        }
-					} else {
-						// Create a non-metallic, non-transparent sphere
-						sphere.metallic = false;
-						sphere.transparent = false;
-                        if (type_gen < 0.8f) {
-                            sphere.roughness = (type_gen - 0.2f) * 0.5f;
-                        } else if (type_gen < 0.9f) {
-                            sphere.roughness = 1.0f;
-                            sphere.emission = 100.0f;
-                        } else {
-                            sphere.roughness = 0.4f + 2.0f * (type_gen - 0.4f);
-                        }
-					}
-
-                    // Create random spheres
-                    sphere.center = make_float3(15.0f * (rnd_f() - .5f), 0.0f, 15.0f * (rnd_f() - .5f));
-				    sphere.radius = 0.5f;
-                    sphere.color = make_float3(rnd_f(), rnd_f(), rnd_f());
-                    sphere.specular = sphere.color;
-
-                    // Check for overlapping spheres
-                    for (int j = 0; j < spheres.size(); ++j) {
-						float3 diff = spheres[j].center - sphere.center;
-						float dist = sqrtf(dot(diff, diff));
-
-						if (dist < spheres[j].radius + sphere.radius) {
-							--i;
-                            overlap = true;
-						}
-					}
-                } else {
-					// Have a row of metallic, non-metallic, and transparent spheres
-					// Each row should have 5 spheres lined up with increasing roughness (0, 0.25, 0.5, 0.75, 1.0)
-
-					int row = (i - 1) / 3; // dictates the roughness of the sphere
-					int col = (i - 1) % 3; // dictates if the sphere is metallic, transparent, or neither
-                    
-					sphere.center = make_float3(2.0f * (col - 2), 0.0f, 2.0f * row);
-					sphere.radius = 0.5f;
-					sphere.color = make_float3(0.35f, 0.55f, 0.4f);
-					sphere.specular = sphere.color;
-					sphere.emission = 0.0f;
-                    
-					if (col == 0) {
-						sphere.metallic = false;
-						sphere.transparent = false;
-                        sphere.roughness = 0.25f * row;
-					}
-					else if (col == 1) {
-						sphere.metallic = true;
-						sphere.transparent = false;
-						sphere.roughness = 0.25f * row;
-					}
-					else {
-						sphere.metallic = false;
-						sphere.transparent = true;
-						sphere.roughness = 0.25f * row;
-					}
-                }
-
-                if (!overlap)
-				    spheres.push_back(sphere);
-			}
-
-            // Create array for the sphere centers and the radii
-            float3* sphere_centers = new float3[NUM_SPHERES];
-            float* sphere_radii = new float[NUM_SPHERES];
-
-            // Copy the sphere data into the arrays
-            for (int i = 0; i < NUM_SPHERES; ++i) {
-                sphere_centers[i] = spheres[i].center;
-                sphere_radii[i] = spheres[i].radius;
-            }
-
             // Create an array of indices for the materials of the spheres
-            std::vector<uint32_t> g_mat_indices;
-            for (int i = 0; i < NUM_SPHERES; ++i) {
-				g_mat_indices.push_back(i);
-			}
+            //for (int i = 0; i < NUM_TRIANGLES; ++i) {
+            //    g_mat_indices.push_back(i);
+            //}
 
             // Allocate device memory for the array of material indices and copy the data from host to device
-            CUdeviceptr  d_mat_indices = 0;
             const size_t mat_indices_size_in_bytes = g_mat_indices.size() * sizeof(uint32_t);
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_mat_indices), mat_indices_size_in_bytes));
             CUDA_CHECK(cudaMemcpy(
@@ -462,36 +723,37 @@ int main(int argc, char* argv[])
             ));
 
             // Allocate device memory for the array of spheres' center vertices and copy the data from host to device
-            CUdeviceptr d_vertex_buffer;
-            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex_buffer), spheres.size() * sizeof(float3)));
-            CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_vertex_buffer), sphere_centers,
-                				spheres.size() * sizeof(float3), cudaMemcpyHostToDevice));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_vertex_buffer), g_vertices.size() * sizeof(float4)));
+            CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_vertex_buffer), g_vertices.data(),
+                g_vertices.size() * sizeof(float4), cudaMemcpyHostToDevice));
 
-            // Allocate device memory for the array of spheres' radii and copy the data from host to device
-            CUdeviceptr d_radius_buffer;
-            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_radius_buffer), spheres.size() * sizeof(float)));
-            CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_radius_buffer), sphere_radii,
-                								spheres.size() * sizeof(float), cudaMemcpyHostToDevice));
+            // Allocate device memory for the array of spheres' center vertices and copy the data from host to device
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_normal_buffer), g_normals.size() * sizeof(float4)));
+            CUDA_CHECK(cudaMemcpy(reinterpret_cast<void*>(d_normal_buffer), g_normals.data(),
+                g_normals.size() * sizeof(float4), cudaMemcpyHostToDevice));
 
             // Configure the build input to describe the spheres with the provided vertex and radius buffers
-            OptixBuildInput sphere_input = {};
-            sphere_input.type = OPTIX_BUILD_INPUT_TYPE_SPHERES;
-            sphere_input.sphereArray.vertexBuffers = &d_vertex_buffer;
-            sphere_input.sphereArray.numVertices = spheres.size();
-            sphere_input.sphereArray.radiusBuffers = &d_radius_buffer;
-            uint32_t sphere_input_flags[NUM_SPHERES];
-            for (int i = 0; i < NUM_SPHERES; ++i) {
-				sphere_input_flags[i] = OPTIX_GEOMETRY_FLAG_NONE;
-			}
-            sphere_input.sphereArray.flags = sphere_input_flags;
-            sphere_input.sphereArray.numSbtRecords = NUM_SPHERES;
-            sphere_input.sphereArray.sbtIndexOffsetBuffer = d_mat_indices; // Buffer with the material indices
-            sphere_input.sphereArray.sbtIndexOffsetSizeInBytes = sizeof(unsigned int); // Size of the material indices
-            sphere_input.sphereArray.sbtIndexOffsetStrideInBytes = sizeof(unsigned int); // Stride of the material indices
+            std::vector<uint32_t> triangle_input_flags;
+
+            for (int i = 0; i < NUM_TRIANGLES; ++i) {
+                triangle_input_flags.push_back(OPTIX_GEOMETRY_FLAG_DISABLE_ANYHIT);
+            }
+
+            OptixBuildInput triangle_input = {};
+            triangle_input.type = OPTIX_BUILD_INPUT_TYPE_TRIANGLES;
+            triangle_input.triangleArray.vertexFormat = OPTIX_VERTEX_FORMAT_FLOAT3;
+            triangle_input.triangleArray.vertexStrideInBytes = sizeof(float4);
+            triangle_input.triangleArray.numVertices = static_cast<uint32_t>(g_vertices.size());
+            triangle_input.triangleArray.vertexBuffers = &d_vertex_buffer;
+            triangle_input.triangleArray.flags = triangle_input_flags.data();
+            triangle_input.triangleArray.numSbtRecords = sceneMaterials.size();
+            triangle_input.triangleArray.sbtIndexOffsetBuffer = d_mat_indices; // Buffer with the material indices
+            triangle_input.triangleArray.sbtIndexOffsetSizeInBytes = sizeof(uint32_t); // Size of the material indices
+            triangle_input.triangleArray.sbtIndexOffsetStrideInBytes = sizeof(uint32_t); // Stride of the material indices
 
             // Compute the memory required for the GAS
             OptixAccelBufferSizes gas_buffer_sizes;
-            OPTIX_CHECK(optixAccelComputeMemoryUsage(context, &accel_options, &sphere_input, 1, &gas_buffer_sizes));
+            OPTIX_CHECK(optixAccelComputeMemoryUsage(context, &accel_options, &triangle_input, 1, &gas_buffer_sizes));
 
             // Allocate temporary buffer for GAS build
             CUdeviceptr d_temp_buffer_gas;
@@ -509,10 +771,11 @@ int main(int argc, char* argv[])
             emitProperty.type = OPTIX_PROPERTY_TYPE_COMPACTED_SIZE;
             emitProperty.result = (CUdeviceptr)((char*)d_buffer_temp_output_gas_and_compacted_size + compactedSizeOffset);
 
+            // TODO this is the issue for memory
             // Build the actual GAS and retrieve the compacted size
             OPTIX_CHECK(optixAccelBuild(context,
                 0,  // CUDA stream
-                &accel_options, &sphere_input,
+                &accel_options, &triangle_input,
                 1,  // Number of build inputs
                 d_temp_buffer_gas, gas_buffer_sizes.tempSizeInBytes,
                 d_buffer_temp_output_gas_and_compacted_size, gas_buffer_sizes.outputSizeInBytes, &gas_handle,
@@ -520,15 +783,13 @@ int main(int argc, char* argv[])
                 1               // Number of emitted properties
             ));
 
-            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_mat_indices)));
 
             // Assign the buffer for GAS output
             d_gas_output_buffer = d_buffer_temp_output_gas_and_compacted_size;
 
             // Free temporary buffers
             CUDA_CHECK(cudaFree((void*)d_temp_buffer_gas));
-            CUDA_CHECK(cudaFree((void*)d_vertex_buffer));
-            CUDA_CHECK(cudaFree((void*)d_radius_buffer));
+            //CUDA_CHECK(cudaFree((void*)d_radius_buffer));
 
             // If compacted size is smaller, create a buffer of that size and do the compaction
             size_t compacted_gas_size;
@@ -539,7 +800,8 @@ int main(int argc, char* argv[])
                 CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&d_gas_output_buffer), compacted_gas_size));
                 OPTIX_CHECK(optixAccelCompact(context, 0, gas_handle, d_gas_output_buffer, compacted_gas_size, &gas_handle));
                 CUDA_CHECK(cudaFree((void*)d_buffer_temp_output_gas_and_compacted_size));
-            } else {
+            }
+            else {
                 d_gas_output_buffer = d_buffer_temp_output_gas_and_compacted_size;
             }
         }
@@ -554,7 +816,7 @@ int main(int argc, char* argv[])
         // number of payload and attribute values, motion blur or primitive types etc.
         //
         OptixModule module = nullptr;
-        OptixModule sphere_module = nullptr;
+        OptixModule triangle_module = nullptr;
         OptixPipelineCompileOptions pipeline_compile_options = {};
         {
             OptixModuleCompileOptions module_compile_options = {};
@@ -571,7 +833,7 @@ int main(int argc, char* argv[])
             pipeline_compile_options.numAttributeValues = 1;
             pipeline_compile_options.exceptionFlags = OPTIX_EXCEPTION_FLAG_NONE;
             pipeline_compile_options.pipelineLaunchParamsVariableName = "params";
-            pipeline_compile_options.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_SPHERE;
+            pipeline_compile_options.usesPrimitiveTypeFlags = OPTIX_PRIMITIVE_TYPE_FLAGS_TRIANGLE;
 
             // Load CUDA source from file and create the module containing the compiled CUDA functions (shaders)
             size_t      inputSize = 0;
@@ -583,9 +845,9 @@ int main(int argc, char* argv[])
             // Apart from user-defined intersection programs, OptiX also provides built-in intersection programs for certain primitives like spheres and triangles.
             OptixBuiltinISOptions builtin_is_options = {};
             builtin_is_options.usesMotionBlur = false;
-            builtin_is_options.builtinISModuleType = OPTIX_PRIMITIVE_TYPE_SPHERE;
+            builtin_is_options.builtinISModuleType = OPTIX_PRIMITIVE_TYPE_TRIANGLE;
             OPTIX_CHECK_LOG(optixBuiltinISModuleGet(context, &module_compile_options, &pipeline_compile_options,
-                &builtin_is_options, &sphere_module));
+                &builtin_is_options, &triangle_module));
         }
 
         //
@@ -638,7 +900,7 @@ int main(int argc, char* argv[])
             hitgroup_prog_group_desc.hitgroup.entryFunctionNameCH = "__closesthit__radiance";
             hitgroup_prog_group_desc.hitgroup.moduleAH = nullptr;
             hitgroup_prog_group_desc.hitgroup.entryFunctionNameAH = nullptr;
-            hitgroup_prog_group_desc.hitgroup.moduleIS = sphere_module; // Use the built-in sphere module for intersection
+            hitgroup_prog_group_desc.hitgroup.moduleIS = triangle_module; // Use the built-in sphere module for intersection 
             hitgroup_prog_group_desc.hitgroup.entryFunctionNameIS = nullptr;
             OPTIX_CHECK_LOG(optixProgramGroupCreate(
                 context,
@@ -704,6 +966,7 @@ int main(int argc, char* argv[])
         // SBT records hold the function pointers and the data those shaders need :
         //
         OptixShaderBindingTable sbt = {};
+        float4* d_hdr_image_data = nullptr;
         {
             // The ray generation record encapsulates the data structure which will
             // be read by the ray generation program upon execution. In this OptiX framework,
@@ -734,12 +997,27 @@ int main(int argc, char* argv[])
                 cudaMemcpyHostToDevice
             ));
 
-            // Miss record setup - contains the background color for rays that miss geometry
+            // Allocate device memory for the HDR image data
+            size_t hdr_image_size = hdr_image.width * hdr_image.height * sizeof(float4);
+            CUDA_CHECK(cudaMalloc(&d_hdr_image_data, hdr_image_size));
+            CUDA_CHECK(cudaMemcpy(
+                d_hdr_image_data,
+                hdr_image.data,
+                hdr_image_size,
+                cudaMemcpyHostToDevice
+            ));
+
+            // Allocate device memory for the miss record
             CUdeviceptr miss_record;
             size_t      miss_record_size = sizeof(MissSbtRecord);
             CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&miss_record), miss_record_size));
+
+            // Initialize the miss SBT record
             MissSbtRecord ms_sbt;
-            ms_sbt.data = { 0.35f, 0.762f, 0.95f };
+            ms_sbt.data.hdr_image_data = d_hdr_image_data; // Set the device pointer
+            ms_sbt.data.width = hdr_image.width;
+            ms_sbt.data.height = hdr_image.height;
+
             OPTIX_CHECK(optixSbtRecordPackHeader(miss_prog_group, &ms_sbt));
             CUDA_CHECK(cudaMemcpy(
                 reinterpret_cast<void*>(miss_record),
@@ -751,31 +1029,35 @@ int main(int argc, char* argv[])
             // Hit group record setup - contains the closest hit shader
             CUdeviceptr hitgroup_records;
             size_t      hitgroup_record_size = sizeof(HitGroupSbtRecord);
-            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&hitgroup_records), hitgroup_record_size * NUM_SPHERES));
+            CUDA_CHECK(cudaMalloc(reinterpret_cast<void**>(&hitgroup_records), hitgroup_record_size * sceneMaterials.size()));
 
             // Populate the SBT records with each sphere's color data
-            HitGroupSbtRecord* hg_sbts = new HitGroupSbtRecord[NUM_SPHERES];
+            HitGroupSbtRecord* hg_sbts = new HitGroupSbtRecord[sceneMaterials.size()];
 
             // Populate the hit group records with their associated data
-            for (size_t i = 0; i < NUM_SPHERES; ++i)
+            for (size_t i = 0; i < sceneMaterials.size(); ++i)
             {
                 // Pack the hitgroup_prog_group's shader identifier into each hit group record's header.
                 OPTIX_CHECK(optixSbtRecordPackHeader(hitgroup_prog_group, &hg_sbts[i]));
 
+                hg_sbts[i].data.vertices = reinterpret_cast<float4*>(d_vertex_buffer);
+                hg_sbts[i].data.normals = reinterpret_cast<float4*>(d_normal_buffer);
+
                 // Fill each of your SBT records with the appropriate color
-                hg_sbts[i].data.diffuse_color = spheres[i].color;  // Assuming 'spheres' is the vector of SphereData you allocated earlier.
-				hg_sbts[i].data.emission_color = spheres[i].color * spheres[i].emission;
-                hg_sbts[i].data.specular = spheres[i].specular;
-                hg_sbts[i].data.roughness = spheres[i].roughness;
-                hg_sbts[i].data.metallic = spheres[i].metallic;
-                hg_sbts[i].data.transparent = spheres[i].transparent;
+                const Material& mat = sceneMaterials[i];
+                hg_sbts[i].data.emission_color = mat.color * mat.emission;
+                hg_sbts[i].data.diffuse_color = mat.color;
+                hg_sbts[i].data.specular = mat.specular;
+                hg_sbts[i].data.roughness = mat.roughness;
+                hg_sbts[i].data.metallic = mat.metallic;
+                hg_sbts[i].data.transparent = mat.transparent;
             }
 
             // Copy the hit group SBT records to the device
             CUDA_CHECK(cudaMemcpy(
                 reinterpret_cast<void*>(hitgroup_records),
                 hg_sbts,
-                hitgroup_record_size * NUM_SPHERES,
+                hitgroup_record_size * sceneMaterials.size(),
                 cudaMemcpyHostToDevice
             ));
 
@@ -788,29 +1070,29 @@ int main(int argc, char* argv[])
             sbt.missRecordCount = 1;
             sbt.hitgroupRecordBase = hitgroup_records;
             sbt.hitgroupRecordStrideInBytes = hitgroup_record_size;
-            sbt.hitgroupRecordCount = NUM_SPHERES;
+            sbt.hitgroupRecordCount = sceneMaterials.size();
         }
 
         // Create an output buffer for rendering the final image
         sutil::CUDAOutputBuffer<uchar4> output_buffer(sutil::CUDAOutputBufferType::CUDA_DEVICE, width, height);
-		
+
         std::string outfile;
         sutil::CUDAOutputBufferType output_buffer_type = sutil::CUDAOutputBufferType::GL_INTEROP;
         CUstream stream;
         CUDA_CHECK(cudaStreamCreate(&stream));
-		int samples_per_launch = 0;
+        int samples_per_launch = 0;
 
         // Set up launch parameters
         Params params;
         params.image_width = width;
         params.image_height = height;
         params.accum_buffer = nullptr;
-		
+
         CUDA_CHECK(cudaMalloc(
             reinterpret_cast<void**>(&params.accum_buffer),
-            params.image_width* params.image_height * sizeof(float4)
+            params.image_width * params.image_height * sizeof(float4)
         ));
-		
+
         params.origin_x = width / 2;
         params.origin_y = height / 2;
         params.handle = gas_handle;
@@ -1015,6 +1297,10 @@ int main(int argc, char* argv[])
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(sbt.missRecordBase)));
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(sbt.hitgroupRecordBase)));
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(params.accum_buffer)));
+            CUDA_CHECK(cudaFree((void*)d_vertex_buffer)); // TODO CHANGE TO VERTEX
+            CUDA_CHECK(cudaFree((void*)d_normal_buffer)); // TODO CHANGE TO NORMAL
+            CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_mat_indices)));
+            CUDA_CHECK(cudaFree(d_hdr_image_data));
 
             // Free the GAS output buffer
             CUDA_CHECK(cudaFree(reinterpret_cast<void*>(d_gas_output_buffer)));
@@ -1025,7 +1311,7 @@ int main(int argc, char* argv[])
             OPTIX_CHECK(optixProgramGroupDestroy(miss_prog_group));
             OPTIX_CHECK(optixProgramGroupDestroy(raygen_prog_group));
             OPTIX_CHECK(optixModuleDestroy(module));
-            OPTIX_CHECK(optixModuleDestroy(sphere_module));
+            OPTIX_CHECK(optixModuleDestroy(triangle_module));
 
             // Finally destroy the OptiX context itself
             OPTIX_CHECK(optixDeviceContextDestroy(context));

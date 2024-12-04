@@ -1,16 +1,18 @@
-// The SphereData structure holds the data for a single sphere in the scene.
-struct SphereData
+struct Material // TODO move to .h
 {
-    float3 center;
-    float radius;
-
     float3 color;
     float3 specular;   // Specular reflectance of the material.
-    
+
     float emission;
     float roughness;  // Roughness value of the material.
     bool metallic;     // Whether the material is metallic or not.
     bool transparent;  // Whether the material is transparent or not.
+};
+
+// The SphereData structure holds the data for a single sphere in the scene.
+struct TriangleData
+{
+	float4 v0, v1, v2, n0, n1, n2;
 };
 
 // The Params structure holds the scene parameters that are read by the ray generation program.
@@ -31,8 +33,8 @@ struct Params
     float3       V;
     float3       W;
 
-    SphereData*            spheres;       // Pointer to the array of spheres in the scene
-    unsigned int           num_spheres;   // Number of spheres in the scene
+    TriangleData*          triangles;       // Pointer to the array of spheres in the scene
+    unsigned int           num_triangles;   // Number of spheres in the scene
 
     OptixTraversableHandle handle;        // Handle to the top-level acceleration structure for raytracing
 };
@@ -64,13 +66,17 @@ struct RayGenData
 // The MissData structure contains data used by the miss program (the background color).
 struct MissData
 {
-    float r, g, b;  // RGB color of the background
+    float4* hdr_image_data; // Device pointer to the HDRi image data
+    int     width;          // Image width
+    int     height;         // Image height
 };
 
 
 // The HitGroupData structure would contain data about the materials or geometric properties if needed.
 struct HitGroupData
 {
+    float4* vertices;
+    float4* normals;
     float3 emission_color;
     float3 diffuse_color;
     float3 specular;   // Specular reflectance of the material.
