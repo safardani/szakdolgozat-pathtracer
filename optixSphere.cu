@@ -414,6 +414,7 @@ extern "C" __global__ void __raygen__rg()
     // Apply exposure before tonemapping
     payload_rgb = accum_color * exp2(exposure); // Incorporate exposure
 
+
     // Apply filmic tonemapping to the HDR values
     payload_rgb = tonemap(payload_rgb);
 
@@ -426,6 +427,7 @@ extern "C" __global__ void __raygen__rg()
         powf(payload_rgb.x, 1.0f / gamma),
         powf(payload_rgb.y, 1.0f / gamma),
         powf(payload_rgb.z, 1.0f / gamma));
+
 
     float contrast = 1.25f; // for example, >1 increases contrast, <1 decreases it
     payload_rgb = 0.5f + contrast * (payload_rgb - 0.5f);
@@ -541,8 +543,19 @@ extern "C" __global__ void __miss__radiance()
     float u = 0.5f + atan2f(ray_dir.z, ray_dir.x) / (2.0f * M_PIf);
     float v = 0.5f - asinf(ray_dir.y) / M_PIf;
 
-    // Sample the HDRi image data
-    float4 hdr_color = sampleHDRI(ms_data->hdr_image_data, ms_data->width, ms_data->height, u, v);
+    float4 hdr_color;
+    bool use_hdr = true;
+    if (use_hdr) {
+        // Sample the HDRi image data
+        hdr_color = sampleHDRI(ms_data->hdr_image_data, ms_data->width, ms_data->height, u, v);
+    } else {
+		if (dot(ray_dir, normalize(make_float3(0, 2, 3))) > 0.99f) {
+			hdr_color = make_float4(200.0f, 175.0f, 125.0f, 0.0f);
+		}
+		else {
+			hdr_color = make_float4(0.4f, 0.4f, 0.6f, 0.0f);
+		}
+    }
 
     // Use the sampled color as the radiance
     prd.radiance += prd.attenuation * make_float3(hdr_color.x, hdr_color.y, hdr_color.z);
@@ -593,6 +606,7 @@ static __forceinline__ __device__ float3 setMaterialProperty(
     }
     else {
         // Fallback to the diffuse_color if no texture
+		//printf("fallback for texture: %f %f %f\n", fallback.x, fallback.y, fallback.z);
         return fallback;
     }
 
@@ -646,6 +660,7 @@ extern "C" __global__ void __closesthit__radiance()
     
     // Interpolate normal
     float3 normal = bary_alpha * n0 + bary_beta * n1 + bary_gamma * n2;
+
     if (length(normal) > 0.01f) normal = normalize(normal);
     else {
         payload.done = true;
@@ -656,9 +671,7 @@ extern "C" __global__ void __closesthit__radiance()
     //*/
 
     if (dot(normal, ray_dir) > 0.0f) {
-        payload.done = true;
-        setPayloadCH(payload);
-        return;
+		normal = flat_normal;
     }
     //normal = flat_normal;
 
@@ -675,13 +688,17 @@ extern "C" __global__ void __closesthit__radiance()
         hit_group_data->has_normal_map, hit_group_data->normal_texture_data,
         make_float3(0,1,0), hit_group_data->normal_width,
         hit_group_data->normal_height, uv_final.x, uv_final.y);
+    if (hit_group_data->has_normal_map) {
+        normal_map = normalize(2.0f * normal_map - make_float3(1.0f));
+	    normal_map = make_float3(normal_map.x, normal_map.z, normal_map.y);
+    }
 
-    normal = flat_normal;
-	float normal_map_strength = 0.1f;
+    //normal = flat_normal;
+	float normal_map_strength = 0.4f;
 	Onb onb_nmap(normal);
     onb_nmap.inverse_transform(normal_map);
-	normal = normalize(normal_map_strength * normal_map + (1.0f - normal_map_strength) * normal);
 
+	normal = normalize(normal_map_strength * normal_map + (1.0f - normal_map_strength) * normal);
     float3 specular_albedo = diffuse_albedo;
 	float3 emission_color = hit_group_data->emission_color;
 
@@ -780,8 +797,8 @@ extern "C" __global__ void __closesthit__radiance()
 
 
     // TODO WHATEVER THIS IS
-	//float3 brdf = specular_probability * (brdf_specular / spdf) + (1 - specular_probability) * (diffuse_albedo / dpdf);
-    float3 brdf = specular_probability * (brdf_specular / pdf) + (1 - specular_probability) * (diffuse_albedo / pdf);
+	float3 brdf = specular_probability * (brdf_specular / spdf) + (1 - specular_probability) * (diffuse_albedo / dpdf);
+    //float3 brdf = specular_probability * (brdf_specular / pdf) + (1 - specular_probability) * (diffuse_albedo / pdf);
 
     // Determine if the material is transparent (glass)
     if (transparency > 0.5f)
@@ -841,9 +858,11 @@ extern "C" __global__ void __closesthit__radiance()
     //payload.radiance += payload.attenuation * (brdf * IdotN / pdf); // TODO needed when doing NEE
     if (length(brdf) >= 1e-10f) {
         payload.attenuation *= (brdf * IdotN);// / pdf;
-        // payload.attenuation = make_float3(1);
-        // payload.radiance = make_float3(specular_probability);
-        // payload.done = true;
+        /*
+        payload.attenuation = make_float3(1);
+        payload.radiance = diffuse_albedo;
+        payload.done = true;
+        //*/
     }
     
     payload.origin = hit_pos;

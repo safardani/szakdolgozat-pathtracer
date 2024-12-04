@@ -402,7 +402,8 @@ void createSceneGeometry(
     std::vector<Material>& sceneMaterials,
     std::vector<uint32_t>& g_mat_indices,
     bool loadFromFile = false,
-    std::vector<std::string> filenames = {}
+    std::vector<std::string> filenames = {},
+	float scale = 1.0f
 ) {
     if (loadFromFile)
     {
@@ -465,10 +466,10 @@ void createSceneGeometry(
                     for (int v = 0; v < 3; v++)
                     {
                         tinyobj::index_t idx = shape.mesh.indices[index_offset + v];
-                        tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0];
-                        tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1];
-                        tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2];
-                        vertices[v] = make_float4(vx + (i - 0.f) * 4.f, vy, vz, 0.0f);
+                        tinyobj::real_t vx = attrib.vertices[3 * idx.vertex_index + 0] * scale;
+                        tinyobj::real_t vy = attrib.vertices[3 * idx.vertex_index + 1] * scale;
+                        tinyobj::real_t vz = attrib.vertices[3 * idx.vertex_index + 2] * scale;
+                        vertices[v] = make_float4(vx + (i - 0.f) * 0.f, vy, vz, 0.0f);
 
                         if (idx.normal_index >= 0) {
                             tinyobj::real_t nx = attrib.normals[3 * idx.normal_index + 0];
@@ -553,10 +554,10 @@ void createSceneGeometry(
             float decider = rnd_f();
 			if (have_texture || have_metallic_map || have_normal_map || have_roughness_map) {
                 // If we have a texture, set a neutral fallback
-                objMaterial.color = make_float3(1.0f, 1.0f, 1.0f);
-                objMaterial.specular = make_float3(1.0f, 1.0f, 1.0f);
+                objMaterial.color = make_float3(0.5f);
+                objMaterial.specular = make_float3(0.5f);
                 objMaterial.emission = 0.0f;
-                objMaterial.roughness = 1.0f; // something reasonable
+                objMaterial.roughness = 0.4f; // something reasonable
                 objMaterial.metallic = false;
                 objMaterial.transparent = false;
 				objMaterial.has_texture = have_texture;
@@ -595,10 +596,10 @@ void createSceneGeometry(
 
         // After loading all files, we add the floor geometry
         Material floorMaterial = {
-            make_float3(1.0f, 1.0f, 1.0f),
-            make_float3(1.0f, 1.0f, 1.0f),
+            make_float3(0.2f),
+            make_float3(0.2f),
             0.0f,
-            1.0f,
+            0.1f,
             false,
             false
         };
@@ -828,7 +829,8 @@ int main(int argc, char* argv[])
         bool loadFromFile = true; // Flag to load geometry from an OBJ file
         std::string projectPath = "C:\\ProgramData\\NVIDIA Corporation\\OptiX SDK 8.0.0\\SDK\\optixSphere\\";
         std::vector<std::string> objFilename = {
-            projectPath + "test.obj"
+            projectPath + "suitcase.obj",
+			projectPath + "test.obj"
         };
         std::string hdr_filename = projectPath + "env4.exr"; // Replace with your HDRi image path.
         sutil::ImageBuffer hdr_image = sutil::loadImage(hdr_filename.c_str());
@@ -836,7 +838,7 @@ int main(int argc, char* argv[])
         // Create scene geometry: spheres and ground plane
         std::vector<Material> sceneMaterials;
         std::vector<uint32_t> g_mat_indices;
-        createSceneGeometry(triangles, sceneMaterials, g_mat_indices, /* loadFromFile */ loadFromFile, objFilename);
+        createSceneGeometry(triangles, sceneMaterials, g_mat_indices, /* loadFromFile */ loadFromFile, objFilename, 0.05f);
 #define NUM_TRIANGLES triangles.size()
 
         // create a g_vertices array of all the vertices
