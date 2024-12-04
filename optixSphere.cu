@@ -436,25 +436,14 @@ extern "C" __global__ void __raygen__rg()
 // GGX Normal Distribution Function (NDF)
 static __forceinline__ __device__ float D_GGX(float3 n, float3 h, float a)
 {
-    if (a <= 0.0001f) {
-        if (dot(n, h) >= 0.999f) {
-            return 1;
-        } else {
-            return 0;
-        }
-    } else {
-        float a2 = a * a;
-        float NdotH = fmaxf(dot(n, h), 0.0000001f);
-        float NdotH2 = NdotH * NdotH;
+    float a2 = a * a;
+    float NdotH = fmaxf(dot(n, h), 1e-10f);
+    float NdotH2 = NdotH * NdotH;
 
-        float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
-        denom = M_PIf * denom * denom;
+    float denom = (NdotH2 * (a2 - 1.0f) + 1.0f);
+    denom = M_PIf * denom * denom;
 
-	    if (denom < 0.0000001f)
-		    return 1.0f;
-        return a2 / denom;
-    }
-
+    return a2 / denom;
 }
 
 // Geometry Function (G) using Schlick-GGX
@@ -475,7 +464,7 @@ static __forceinline__ __device__ float G_SchlickGGX(float alpha, float3 n, floa
 
 	float k = alpha / 2.0f;
 	float denominator = fabsf(dot(n, x)) * (1.0f - k) + k;
-	denominator = fmaxf(denominator, 0.000001f);
+	denominator = fmaxf(denominator, 1e-10f);
 
 	return numerator / denominator;
 }
@@ -666,7 +655,11 @@ extern "C" __global__ void __closesthit__radiance()
     //normal = faceforward(normal, -ray_dir, normal); 
     //*/
 
-	//if (dot(normal, ray_dir) > -0.25f) normal = flat_normal;
+    if (dot(normal, ray_dir) > 0.0f) {
+        payload.done = true;
+        setPayloadCH(payload);
+        return;
+    }
     //normal = flat_normal;
 
     const float3 hit_pos = ray_orig + t_hit * ray_dir;
@@ -682,6 +675,12 @@ extern "C" __global__ void __closesthit__radiance()
         hit_group_data->has_normal_map, hit_group_data->normal_texture_data,
         make_float3(0,1,0), hit_group_data->normal_width,
         hit_group_data->normal_height, uv_final.x, uv_final.y);
+
+    normal = flat_normal;
+	float normal_map_strength = 0.1f;
+	Onb onb_nmap(normal);
+    onb_nmap.inverse_transform(normal_map);
+	normal = normalize(normal_map_strength * normal_map + (1.0f - normal_map_strength) * normal);
 
     float3 specular_albedo = diffuse_albedo;
 	float3 emission_color = hit_group_data->emission_color;
@@ -752,34 +751,37 @@ extern "C" __global__ void __closesthit__radiance()
 	float3 brdf_specular = F * D * G / (4.0f * fabsf(dot(normal, -ray_dir)) * fabsf(dot(normal, light_dir))); // TODO DIFFUSE OR NOT?
 	//half_vec = normalize(light_dir_diffuse - ray_dir); // TODO is this correct? this is so the ggx sampling is ONLY affecting D, everything else is diffuse
 
-    float NdotH = fmaxf(dot(normal, half_vec), 0.001f);
+    float NdotH = fmaxf(dot(normal, half_vec), 1e-10f);
     float VdotH = fabsf(dot(-ray_dir, half_vec));
-    VdotH = fmaxf(dot(-ray_dir, half_vec), 0.001f);
+	float NdotL = fmaxf(dot(normal, light_dir), 0.0f);
+    VdotH = fmaxf(dot(-ray_dir, half_vec), 1e-10f);
 	float NdotV = fmaxf(dot(normal, - ray_dir), 0.0f);
-    float IdotN = fabsf(dot(normal, normalize(light_dir_diffuse))); // TODO DIFFUSE OR NOT?
+    float IdotN = fabsf(dot(normal, normalize(light_dir))); // TODO DIFFUSE OR NOT?
 	float F_blend_factor = Fresnel_Schlick_float(NdotV, ior);
 
     // calculating the type of the next bounce
     float specular_probability = metallicity + (1.0f - metallicity) * F_blend_factor;
+	float spdf = D * NdotH / (4.0f * VdotH);
+    float dpdf = 1.0f / M_PIf; // TODO IdotN gets pulled out to the attenuation part
+    float pdf;
     //specular_probability = 1;
     if (myrnd(seed) < specular_probability)
     {
         payload.direction = normalize(light_dir);
         payload.specular_bounce = true;
+        pdf = spdf;
     }
     else {
 
         payload.direction = normalize(light_dir_diffuse);
         payload.specular_bounce = false;
+        pdf = dpdf;
     }
 
-	// probability distribution function for ggx importance sampling
-	float spdf = D * NdotH / (4.0f * VdotH);
-    float dpdf = 1.0f / M_PIf; // TODO IdotN gets pulled out to the attenuation part
 
-
-    float pdf = specular_probability * spdf + (1.0f - specular_probability) * dpdf;
-	float3 brdf = specular_probability * brdf_specular + (1.0f - specular_probability) * diffuse_albedo;
+    // TODO WHATEVER THIS IS
+	//float3 brdf = specular_probability * (brdf_specular / spdf) + (1 - specular_probability) * (diffuse_albedo / dpdf);
+    float3 brdf = specular_probability * (brdf_specular / pdf) + (1 - specular_probability) * (diffuse_albedo / pdf);
 
     // Determine if the material is transparent (glass)
     if (transparency > 0.5f)
@@ -837,8 +839,12 @@ extern "C" __global__ void __closesthit__radiance()
     }
 
     //payload.radiance += payload.attenuation * (brdf * IdotN / pdf); // TODO needed when doing NEE
-	if (length(brdf) >= 0.00001f)
-        payload.attenuation *= (brdf * IdotN) / pdf;
+    if (length(brdf) >= 1e-10f) {
+        payload.attenuation *= (brdf * IdotN);// / pdf;
+        // payload.attenuation = make_float3(1);
+        // payload.radiance = make_float3(specular_probability);
+        // payload.done = true;
+    }
     
     payload.origin = hit_pos;
     payload.seed = seed; // update the seed to keeprandomness

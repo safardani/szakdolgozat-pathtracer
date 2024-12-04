@@ -606,7 +606,7 @@ void createSceneGeometry(
         int floorMaterialIndex = (int)sceneMaterials.size();
         sceneMaterials.push_back(floorMaterial);
 
-        float floor_y = minHeight - 10;
+        float floor_y = minHeight;
         float floor_size = 200.0f;
 
         float4 fv0 = make_float4(-floor_size, floor_y, -floor_size, 0.0f);
